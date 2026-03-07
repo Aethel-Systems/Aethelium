@@ -73,6 +73,10 @@
 #include <sys/wait.h>
 #endif
 #include <sys/stat.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+#endif
 
 #define MAX_INPUT_FILES 128
 
@@ -85,6 +89,49 @@
 #define FORMAT_LET  5
 #define FORMAT_BIN  6
 #define FORMAT_PE   7        /* UEFI PE32+ 工业级应用（新增） */
+
+static int create_temp_file_path(char *path_out, size_t path_out_sz, const char *prefix) {
+    if (!path_out || path_out_sz == 0 || !prefix) {
+        return -1;
+    }
+#ifdef _WIN32
+    {
+        const char *tmp_dir;
+        int n;
+        int fd;
+
+        tmp_dir = getenv("TEMP");
+        if (!tmp_dir || tmp_dir[0] == '\0') {
+            tmp_dir = getenv("TMP");
+        }
+        if (!tmp_dir || tmp_dir[0] == '\0') {
+            tmp_dir = ".";
+        }
+        n = snprintf(path_out, path_out_sz, "%s\\%s-XXXXXX", tmp_dir, prefix);
+        if (n < 0 || (size_t)n >= path_out_sz) {
+            return -1;
+        }
+        if (_mktemp_s(path_out, path_out_sz) != 0) {
+            return -1;
+        }
+        fd = _open(path_out, _O_RDWR | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+        if (fd < 0) {
+            unlink(path_out);
+            return -1;
+        }
+        return fd;
+    }
+#else
+    {
+        int n;
+        n = snprintf(path_out, path_out_sz, "/tmp/%s-XXXXXX", prefix);
+        if (n < 0 || (size_t)n >= path_out_sz) {
+            return -1;
+        }
+        return mkstemp(path_out);
+    }
+#endif
+}
 
 // ============================================================================
 // 二进制格式生成函数 - 直接从编译输出生成目标格式
@@ -1029,7 +1076,7 @@ static int compile_inline_asm_to_bin(const char *input_file,
     char *source = NULL;
     char **lines = NULL;
     size_t line_count = 0;
-    char asm_tmp[] = "/tmp/aethelc-asm-XXXXXX";
+    char asm_tmp[512];
     int asm_fd = -1;
     FILE *asm_fp = NULL;
     int rc = -1;
@@ -1053,7 +1100,7 @@ static int compile_inline_asm_to_bin(const char *input_file,
         return 0;
     }
 
-    asm_fd = mkstemp(asm_tmp);
+    asm_fd = create_temp_file_path(asm_tmp, sizeof(asm_tmp), "aasm");
     if (asm_fd < 0) {
         free_asm_lines(lines, line_count);
         return -1;
@@ -1685,12 +1732,12 @@ static int run_compiler(CompilerOptions *opts) {
                                           &let_emit_opts);
     }
     else if (target_format == FORMAT_BIN) {
-        char let_tmp[] = "/tmp/aethelc-let-XXXXXX";
+        char let_tmp[512];
         int let_fd;
         if (opts->verbose) {
             printf("[INFO] 生成 BIN: AE -> LET -> BIN\n");
         }
-        let_fd = mkstemp(let_tmp);
+        let_fd = create_temp_file_path(let_tmp, sizeof(let_tmp), "alet");
         if (let_fd < 0) {
             fprintf(stderr, "Error: failed to create temporary LET file\n");
             free(binary_data);
