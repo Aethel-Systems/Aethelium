@@ -1,0 +1,16 @@
+/*
+ * Silicon Semantics Debug Test
+ */
+
+Rimport Architecture
+
+func main(): Int {
+    /* Direct silicon block in main */
+    silicon {
+        using CPU/Current {
+            MSR/EFER\Syscall/Enable = true
+        }
+    }
+    
+    return 0
+}

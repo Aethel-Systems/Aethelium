@@ -1,0 +1,65 @@
+/* ========================================================
+   AethelOS 自定义语法映射示例
+   使用 syntax 定义模式到代码生成的映射
+   ======================================================== */
+
+/* 声明这是 Architect 模式下的代码 */
+rimport "sys::core"
+
+/* 调试操作简写 */
+syntax DebugOps {
+    "dbg::print" => "call @_aethos_debug_print"
+    "dbg::halt"  => "hlt"
+    "dbg::break" => "int 3"
+    "dbg::panic" => "call @_aethos_panic"
+}
+
+/* CPU 指令简写 */
+syntax CPUInst {
+    "cpu::cli"   => "cli"
+    "cpu::sti"   => "sti"
+    "cpu::hlt"   => "hlt"
+    "cpu::nop"   => "nop"
+    "cpu::pause" => "pause"
+}
+
+/* 内存操作宏 */
+syntax MemOps {
+    "mem::clear" => "call @_aethos_clear_mem"
+    "mem::copy"  => "call @_aethos_copy_mem"
+    "mem::set"   => "call @_aethos_set_mem"
+    "mem::read"  => "call @_aethos_read_mem"
+}
+
+/* I/O 端口操作 */
+syntax IOOps {
+    "io::read_byte"   => "in al, dx"
+    "io::write_byte"  => "out dx, al"
+    "io::read_word"   => "in ax, dx"
+    "io::write_word"  => "out dx, ax"
+    "io::delay"       => "jmp @delay_label"
+}
+
+/* 中断处理 */
+syntax IntOps {
+    "int::enable"  => "sti"
+    "int::disable" => "cli"
+    "int::fence"   => "lfence"
+    "int::return"  => "iretq"
+}
+
+/* 内存保护相关 */
+syntax ProtectionOps {
+    "prot::enable_paging"  => "mov rax, cr0; or rax, 0x80000000; mov cr0, rax"
+    "prot::disable_paging" => "mov rax, cr0; and rax, ~0x80000000; mov cr0, rax"
+    "prot::load_cr3"       => "mov cr3, rax"
+    "prot::flush_tlb"      => "mov rax, cr3; mov cr3, rax"
+}
+
+/* 性能监测 */
+syntax PerfOps {
+    "perf::rdmsr"   => "rdmsr"
+    "perf::wrmsr"   => "wrmsr"
+    "perf::rdtsc"   => "rdtsc"
+    "perf::cpuid"   => "cpuid"
+}

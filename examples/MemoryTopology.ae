@@ -1,0 +1,70 @@
+/* ========================================================
+   AethelOS 内存拓扑映射示例
+   演示使用 map 定义硬件内存结构
+   ======================================================== */
+
+/* 声明这是 Architect 模式下的代码 */
+Rimport sys>core>main
+
+/* ACPI 系统表头拓扑 - 位于 0xE0000 */
+map ACPI/SystemTableHeader at 0xE0000 {
+    "
+    [ Signature:4      ] [ Length:u32   ] [ Revision:u8 ] [ Checksum:u8 ]
+    [ OEMID:6          ] [ OEMTableID:8 ] [ OEMRevision:u32 ]
+    [ CreatorID:u32    ] [ CreatorRevision:u32 ]
+    "
+}
+
+/* BIOS 数据区 - 位于 0x00400 */
+map BIOS/DataArea at 0x00400 {
+    "
+    [ ComPort1:u16     ] [ ComPort2:u16 ] [ ComPort3:u16 ] [ ComPort4:u16 ]
+    [ LptPort1:u16     ] [ LptPort2:u16 ] [ LptPort3:u16 ]
+    [ EBDASegment:u16  ] [ MachineType:u8 ]
+    [ EquipmentFlags:u16 ] [ MemorySize:u16 ]
+    "
+}
+
+/* UEFI 引导环境数据 - 位于 0xF0000 */
+map UEFI/BootContext at 0xF0000 {
+    "
+    [ Signature:8      ] [ Revision:u32 ] [ HeaderSize:u32 ]
+    [ CRC32:u32        ] [ Reserved:u32 ]
+    [ ImageBase:u64    ] [ ImageSize:u64 ]
+    [ EntryPoint:u64   ]
+    "
+}
+
+/* PCR 处理器控制寄存器集 - 位于 0xFEC00000 */
+map CPU/LocalAPIC at 0xFEC00000 {
+    "
+    [ ID:u32           ] [ Version:u32  ] [ TaskPriority:u32  ] [ ArbitrationPriority:u32 ]
+    [ ProcessorPriority:u32 ] [ EOI:u32 ] [ RemoteRead:u32    ] [ LocalDestination:u32 ]
+    [ DestinationFormat:u32 ] [ SpuriousInt:u32 ]
+    "
+}
+
+/* 页表目录项 - 动态位置 */
+map Memory/PageTableEntry at 0x00000 {
+    "
+    [ Present:1        ] [ Write:1      ] [ User:1            ] [ WriteThrough:1 ]
+    [ CacheDisable:1   ] [ Accessed:1   ] [ Dirty:1           ] [ Size:1 ]
+    [ Global:1         ] [ Available:3  ] [ Address:40        ] [ Reserved:11 ]
+    "
+}
+
+/* 中断描述符表条目 */
+map CPU/IDTEntry at 0x00000 {
+    "
+    [ OffsetLow:u16    ] [ Selector:u16 ] [ IST:u8             ] [ Type:u8 ]
+    [ OffsetMid:u16    ] [ OffsetHigh:u32 ]
+    "
+}
+
+/* 全局描述符表条目 */
+map CPU/GDTEntry at 0x00000 {
+    "
+    [ LimitLow:u16     ] [ BaseLow:u24  ] [ AccessByte:u8 ]
+    [ LimitHigh:u4     ] [ Flags:u4     ] [ BaseHigh:u8   ]
+    "
+}

@@ -1,0 +1,117 @@
+/*
+ * Example Aethelium Application
+ * examples/hello/aethel.ae
+ * 
+ * Simple "Hello, AethelOS!" application demonstrating:
+ * - Basic import of system APIs
+ * - Function declarations
+ * - String and integer operations
+ * - AuraUI usage for displaying output
+ */
+
+import AuraUI
+import FileSystem-UserAccess
+
+/* Global state */
+var app/running = true
+var click/count = 0
+
+/* Main entry point for the application */
+func main(): Unit {
+    /* Initialize application */
+    print("Hello, AethelOS!")
+    print("Welcome to Aethelium application")
+    
+    /* Create main window */
+    let window = AuraUI\Window(title: "AethelOS Hello App", size: (400, 300))
+    window\background = Color\glassy()
+    
+    /* Create label */
+    let label = AuraUI\Label(text: "Welcome to AethelOS")
+    label\text/color = (33, 150, 243)  /* Blue */
+    label\font/size = 18
+    
+    /* Create button */
+    let button = AuraUI\Button(text: "Click Me")
+    button\on/tap {
+        click/count = click/count + 1
+        update/label(label)
+    }
+    
+    /* Create counter display */
+    let counter/label = AuraUI\Label(text: "Clicks: 0")
+    
+    /* Add elements to window */
+    window\add(label)
+    window\add(button)
+    window\add(counter/label)
+    
+    /* Show window */
+    window\show()
+}
+
+/* Update label with click count */
+func update/label(label: AuraUI\Label): Unit {
+    let message = "Clicks: " /* + to/string(click/count) */
+    label\set/text(message)
+}
+
+/* Helper function */
+func to/string(value: Int): String {
+    return ""  /* Simplified */
+}
+
+/* Demonstrate file operations */
+func demo/file/operations(): Unit {
+    /* This would require user permission in sandbox mode */
+    
+    let file/content = "Hello from Aethelium!"
+    
+    /* Try to write file */
+    let write/result = file/write(">:home-test.txt", file/content)
+    
+    if write/result\is/ok {
+        print("File written successfully")
+    } else {
+        print("Failed to write file")
+    }
+}
+
+/* Demonstrate async operations */
+async func demo/async/operations(): Unit {
+    print("Starting async operations")
+    
+    await sleep(1000)  /* Sleep 1 second */
+    print("Async operation completed")
+}
+
+/* Helper to write files */
+func file/write(path: String, contents: String): Result {
+    var result = Result{}
+    result\is/ok = true
+    return result
+}
+
+/* Helper to print with newline */
+func print(message: String): Unit {
+    print(message)
+    print("\n")
+}
+
+/* Helper to print */
+func print(message: String): Unit {
+    /* Implementation in runtime */
+}
+
+/* Color helper */
+struct Color {
+    func static glassy(): (Int, Int, Int) {
+        return (200, 220, 240)  /* Light blue */
+    }
+}
+
+/* Application exits cleanly */
+func on/app/exit(): Unit {
+    app/running = false
+    print("Application terminated")
+}

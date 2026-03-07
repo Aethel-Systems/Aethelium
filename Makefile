@@ -1,30 +1,30 @@
 # ============================================================================
-# Aethelium Stage 1 Build System
-# Migrated from AethelOS Stage 1 compiler chain
+# Aethelium Core Build System
+# Migrated from AethelOS core bootstrap compiler chain
 # ============================================================================
 
-.PHONY: all build-dirs compilerStage1 check-platform clean distclean help status
+.PHONY: all build-dirs compilerCore check-platform clean distclean help status
 
 export UNAME_S := $(shell uname -s)
 export ROOT := $(CURDIR)
 export BUILD_DIR := $(ROOT)/build
 export OUTPUT_DIR := $(BUILD_DIR)/output
 
-# Stage1 layout (refactored)
-export STAGE1_DIR := $(ROOT)/stage1
-export TOOLS_C_DIR := $(STAGE1_DIR)/toolsC
+# Core layout (refactored)
+export CORE_DIR := $(ROOT)/core
+export TOOLS_C_DIR := $(CORE_DIR)/toolsC
 export TOOLS_C_INCLUDE := $(TOOLS_C_DIR)/include
-export TOOLS_ASM_DIR := $(STAGE1_DIR)/toolsASM
+export TOOLS_ASM_DIR := $(CORE_DIR)/toolsASM
 export TOOLS_ASM_INCLUDE := $(TOOLS_ASM_DIR)/include
 export TOOLS_ASM_SRC := $(TOOLS_ASM_DIR)/src
 
 # Toolchain
 ifeq ($(UNAME_S),Darwin)
-	export PLATFORM := darwin-x86_64
+	export PLATFORM := darwinX64
 	export NATIVE_CC ?= clang
 	export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -arch x86_64
 else ifeq ($(UNAME_S),Linux)
-	export PLATFORM := linux-x86_64
+	export PLATFORM := linuxX64
 	export NATIVE_CC ?= clang
 	export NATIVE_CFLAGS := -Wall -Wextra -O2 -g
 else
@@ -40,7 +40,7 @@ NASM_FLAGS := -f $(NASM_FORMAT) -g -F dwarf
 NASM_INCLUDE := -I$(TOOLS_ASM_INCLUDE)/
 
 # Output binary
-export COMPILER_STAGE1 := $(OUTPUT_DIR)/aethelcStage1
+export COMPILER_CORE := $(OUTPUT_DIR)/aethelc
 
 # toolsC/aetb
 AETB_GEN_SRC := $(TOOLS_C_DIR)/aetb/src/aetb_gen.c
@@ -54,7 +54,7 @@ TOOLS_ASM_SYSCALL_MACOS := $(TOOLS_ASM_SRC)/core/syscall_macos.asm
 TOOLS_ASM_SRCS := $(TOOLS_ASM_MAIN) $(TOOLS_ASM_EMIT) $(TOOLS_ASM_WEAVER) $(TOOLS_ASM_SYSCALL_MACOS)
 TOOLS_ASM_OBJS := $(patsubst $(ROOT)/%.asm,$(OUTPUT_DIR)/%.o,$(TOOLS_ASM_SRCS))
 
-# toolsC/compiler sources (from AethelOS stage1)
+# toolsC/compiler sources
 COMPILER_C_SRC_DIR := $(TOOLS_C_DIR)/compiler/src
 COMPILER_C_MAIN_DIR := $(COMPILER_C_SRC_DIR)/main
 COMPILER_C_FRONTEND_DIR := $(COMPILER_C_SRC_DIR)/frontend
@@ -111,7 +111,7 @@ COMPILER_C_SRCS := $(COMPILER_C_MAIN) $(COMPILER_C_AETHELC) \
 
 COMPILER_C_OBJS := $(patsubst $(ROOT)/%.c,$(OUTPUT_DIR)/%.o,$(COMPILER_C_SRCS))
 
-all: compilerStage1
+all: compilerCore
 
 build-dirs:
 	@mkdir -p $(OUTPUT_DIR)
@@ -122,23 +122,23 @@ check-platform:
 	@echo "Native CC: $(NATIVE_CC)"
 	@echo "NASM format: $(NASM_FORMAT)"
 
-compilerStage1: $(COMPILER_STAGE1)
+compilerCore: $(COMPILER_CORE)
 	@echo "================================================================================"
-	@echo "✓ Stage 1 Complete: Bootstrap C compiler ready"
-	@echo "  Binary: $(COMPILER_STAGE1)"
+	@echo "✓ Core Compiler Complete: Bootstrap C compiler ready"
+	@echo "  Binary: $(COMPILER_CORE)"
 	@echo "================================================================================"
 
-$(COMPILER_STAGE1): $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS) | build-dirs
+$(COMPILER_CORE): $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS) | build-dirs
 	@echo "================================================================================"
-	@echo "Linking Stage 1 Compiler (native C bootstrap compiler + assembly layer)"
+	@echo "Linking Core Compiler (native C bootstrap compiler + assembly layer)"
 	@echo "  C Objects: $(words $(COMPILER_C_OBJS)) files"
 	@echo "  Assembly Objects: $(words $(TOOLS_ASM_OBJS)) files"
-	@echo "  Output: $(COMPILER_STAGE1)"
+	@echo "  Output: $(COMPILER_CORE)"
 	@echo "================================================================================"
 	$(NATIVE_CC) $(NATIVE_CFLAGS) -o $@ $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS)
-	@echo "✓ Stage 1 Compiler linked successfully: $@"
+	@echo "✓ Core Compiler linked successfully: $@"
 
-$(OUTPUT_DIR)/stage1/toolsC/compiler/%.o: $(ROOT)/stage1/toolsC/compiler/%.c
+$(OUTPUT_DIR)/core/toolsC/compiler/%.o: $(ROOT)/core/toolsC/compiler/%.c
 	@mkdir -p $(dir $@)
 	@echo "  [CC] Compiling: $(notdir $<)"
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) \
@@ -162,7 +162,7 @@ $(OUTPUT_DIR)/stage1/toolsC/compiler/%.o: $(ROOT)/stage1/toolsC/compiler/%.c
 		-I$(TOOLS_C_DIR)/aetb/src \
 		$< -o $@
 
-$(OUTPUT_DIR)/stage1/toolsC/aetb/%.o: $(ROOT)/stage1/toolsC/aetb/%.c
+$(OUTPUT_DIR)/core/toolsC/aetb/%.o: $(ROOT)/core/toolsC/aetb/%.c
 	@echo "[CC] Compiling AETB Generator: $<"
 	@mkdir -p $(@D)
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) \
@@ -170,12 +170,12 @@ $(OUTPUT_DIR)/stage1/toolsC/aetb/%.o: $(ROOT)/stage1/toolsC/aetb/%.c
 		-I$(TOOLS_C_DIR)/aetb/src \
 		$< -o $@
 
-$(OUTPUT_DIR)/stage1/toolsC/mkiso/%.o: $(ROOT)/stage1/toolsC/mkiso/%.c
+$(OUTPUT_DIR)/core/toolsC/mkiso/%.o: $(ROOT)/core/toolsC/mkiso/%.c
 	@mkdir -p $(dir $@)
 	@echo "  [CC] Compiling mkiso source: $(notdir $<)"
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) -I$(TOOLS_C_INCLUDE) $< -o $@
 
-$(OUTPUT_DIR)/stage1/toolsASM/%.o: $(ROOT)/stage1/toolsASM/%.asm
+$(OUTPUT_DIR)/core/toolsASM/%.o: $(ROOT)/core/toolsASM/%.asm
 	@mkdir -p $(dir $@)
 	@echo "  [NASM] Assembling: $(notdir $<)"
 	nasm $(NASM_FLAGS) $(NASM_INCLUDE) -o $@ $<
@@ -183,16 +183,16 @@ $(OUTPUT_DIR)/stage1/toolsASM/%.o: $(ROOT)/stage1/toolsASM/%.asm
 clean:
 	rm -rf $(BUILD_DIR)
 
-# Keep alias with AethelOS naming habit
-bootstrap-compiler-stage1: compilerStage1
-compiler-stage1: compilerStage1
+# Backward-compatible aliases
 
-distclean: clean
+# New aliases
+compilerCore: $(COMPILER_CORE)
 
 status:
-	@test -f "$(COMPILER_STAGE1)" && echo "✓ Stage 1 Compiler" || echo "✗ Stage 1 Compiler (missing)"
+	@test -f "$(COMPILER_CORE)" && echo "✓ Core Compiler" || echo "✗ Core Compiler (missing)"
 
 help:
-	@echo "make compilerStage1   - Build stage1 bootstrap compiler"
-	@echo "make check-platform   - Show platform/toolchain info"
-	@echo "make clean            - Remove build outputs"
+	@echo "make all            - Build core compiler"
+	@echo "make compilerCore   - Build core compiler"
+	@echo "make check-platform - Show platform/toolchain info"
+	@echo "make clean          - Remove build outputs"

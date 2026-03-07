@@ -1,0 +1,24 @@
+/*
+ * Silicon Semantics Basic Test
+ * 硅基语义基础测试
+ */
+
+Rimport Architecture
+
+/* Test: MSR configuration */
+func test/silicon/msr(): Int {
+    /* Microarchitecture configuration - configure EFER MSR */
+    silicon {
+        using CPU/Current {
+            MSR/EFER\Syscall/Enable = true
+        }
+    }
+    
+    return 0
+}
+
+/* Main entry point */
+func main(): Int {
+    test/silicon/msr()
+    return 0
+}

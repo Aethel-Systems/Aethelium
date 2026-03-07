@@ -1,0 +1,63 @@
+// --- AethelOS UEFI Bootloader (Stage 1 Compatible) ---
+// 目标：修复结构体数组解析错误，保持高级语义
+// 规范：Aethelium 2.0
+
+Rimport uefi/protocols
+Rimport hardware/hal
+
+// =========================================================
+// 1/ UEFI 协议定义 (Protocol Definitions)
+// =========================================================
+
+@packed
+struct EFI/SimpleTextOutput {
+    reset: ptr<Void>
+    output/string: ptr<Void> 
+    test/string: ptr<Void>
+}
+
+@packed
+struct EFI/SystemTable {
+    // [FIX]: Stage1 编译器暂不支持结构体内的数组语法 [24]
+    // 我们用 3 个 UInt64 (3 * 8 = 24 bytes) 手动填充
+    // 这保证了内存布局的绝对一致性
+    pad1: UInt64
+    pad2: UInt64
+    pad3: UInt64
+    
+    firmware/vendor: ptr<UInt16>
+    firmware/revision: UInt32
+    
+    con/in/handle: ptr<Void>
+    con/in: ptr<Void>
+    
+    con/out/handle: ptr<Void>
+    con/out: ptr<EFI/SimpleTextOutput>
+    std/err/handle: ptr<Void>
+    std/err: ptr<Void>
+}
+
+// =========================================================
+// 2/ 核心逻辑 (Core Logic)
+// =========================================================
+
+@entry
+@gate(type: \efi)
+func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64 {
+
+    // Aethelium 高级语义：直接使用系统内置动作 print
+    // 编译器会根据 @gate(\efi) 和入口参数自动对接 UEFI 的 ConOut 协议
+    // 告别 B 语言的逐个赋值，告别复杂的函数指针强转
+    print("Hello, AethelOS World!")
+
+    // --- 硬件层：处理器状态控制 ---
+    hardware {
+        // 进入低功耗自旋状态，防止程序退出导致固件重启
+        loop {
+            // 告诉 CPU 流水线：我们在等待
+            hardware\isa\pause()
+        }
+    }
+
+    return 0 // EFI/SUCCESS
+}

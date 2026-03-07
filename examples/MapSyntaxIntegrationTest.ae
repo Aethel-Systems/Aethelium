@@ -1,0 +1,213 @@
+/*
+ * ==================================================================
+ * AethelOS 内存拓扑和语法映射完整测试示例
+ * 演示工业级别的 map 和 syntax 实现
+ * ==================================================================
+ */
+
+/* ===================================================================
+ * Part 1: 内存拓扑 (map) 示例
+ * 用于定义硬件和系统内存结构的强类型映射
+ * =================================================================== */
+
+/* ACPI 系统描述表头 - 所有 ACPI 表的公共顶部 */
+map ACPI/DescriptionTableHeader at 0xE0000 {
+    "
+    [ Signature:4      ] [ Length:u32        ] [ Revision:u8   ] [ Checksum:u8   ]
+    [ OEM_ID:6         ] [ OEM_Table_ID:8    ] [ OEM_Revision:u32 ]
+    [ Creator_ID:u32   ] [ Creator_Revision:u32 ]
+    "
+}
+
+/* BIOS 固件随机存储区（位于 0x00400-0x004FF） */
+map BIOS/DataArea at 0x00400 {
+    "
+    [ COM_Ports:8      ] [ LPT_Ports:6       ] [ EBDA_Segment:u16  ] [ Equipment:u16 ]
+    [ Memory_Size:u16  ] [ Keyboard_State:u8 ] [ Alt_Keypad:u8     ]
+    [ Keyboard_Flags:u8 ] [ Alt_E0:u8         ] [ Alt_E1:u8         ]
+    [ Keyboard_Buf:32  ]
+    "
+}
+
+/* 中断描述符表条目 - 每个中断对应的处理器指令 */
+map CPU/IDT_Entry at 0x00000 {
+    "
+    [ Offset_Low:u16   ] [ Selector:u16      ] [ IST:u8        ] [ Type_Attr:u8 ]
+    [ Offset_Mid:u16   ] [ Offset_High:u32   ] [ Reserved:u32  ]
+    "
+}
+
+/* 全局描述符表条目 - CPU 段描述符 */
+map CPU/GDT_Entry at 0x00000 {
+    "
+    [ Limit_Low:u16    ] [ Base_Low:u24      ] [ Access:u8     ]
+    [ Limit_Attr:u8    ] [ Base_Mid:u8       ] [ Base_High:u32 ]
+    "
+}
+
+/* UEFI 启动信息结构 */
+map UEFI/Boot_Information at 0xFFFE0000 {
+    "
+    [ EFI_Signature:8  ] [ EFI_Revision:u32  ] [ Headersize:u32 ] [ CRC32:u32 ]
+    [ Reserved:u32     ] [ Entry_Point:u64   ] [ Image_Base:u64 ]
+    [ Image_Size:u64   ] [ Code_Entry:u64    ]
+    "
+}
+
+/* 页表项 - x86-64 标准页表条目 */
+map Memory/PageTableEntry at 0x00000 {
+    "
+    [ Present:1        ] [ Write:1           ] [ User:1         ] [ Write_Through:1 ]
+    [ Cache_Disable:1  ] [ Accessed:1        ] [ Dirty:1        ] [ Size_Or_PAT:1 ]
+    [ Global:1         ] [ Avail:3           ] [ Page_Addr:40   ] [ Reserved:11 ]
+    "
+}
+
+/* PCI 配置空间 - PCI 设备的标准配置 */
+map PCI/ConfigSpace at 0x80000000 {
+    "
+    [ Vendor_ID:u16    ] [ Device_ID:u16     ] [ Command:u16    ] [ Status:u16 ]
+    [ Revision:u8      ] [ Class_Code:3      ] [ Header_Type:u8 ]
+    [ BIST:u8          ] [ Base_Address:24   ]
+    "
+}
+
+/* 中断控制器（APIC） */
+map CPU/LocalAPIC at 0xFEC00000 {
+    "
+    [ Reserved_00:4    ] [ APIC_ID:u32       ] [ Reserved_04:4  ] [ Version:u32 ]
+    [ Reserved_08:4    ] [ TPR:u32           ] [ Reserved_0C:4  ] [ APR:u32 ]
+    [ Reserved_10:4    ] [ PPR:u32           ] [ Reserved_14:4  ] [ EOI:u32 ]
+    [ Reserved_18:4    ] [ Remote_Read:u32   ]
+    "
+}
+
+/* ===================================================================
+ * Part 2: 自定义语法映射 (syntax)
+ * 用于定义代码模式和对应的实现
+ * =================================================================== */
+
+/* 调试支持宏 - 便捷的调试操作 */
+syntax DebugOps {
+    "dbg::trace"    => "call @_aethos_debug_trace"
+    "dbg::print"    => "call @_aethos_debug_print"
+    "dbg::halt"     => "hlt"
+    "dbg::break"    => "int 3"
+    "dbg::panic"    => "call @_aethos_panic"
+}
+
+/* CPU 低级指令简写 */
+syntax CPUInstructions {
+    "cpu::cli"      => "cli"
+    "cpu::sti"      => "sti"
+    "cpu::hlt"      => "hlt"
+    "cpu::nop"      => "nop"
+    "cpu::pause"    => "pause"
+    "cpu::lfence"   => "lfence"
+    "cpu::mfence"   => "mfence"
+    "cpu::sfence"   => "sfence"
+}
+
+/* 内存操作 - 高效的内存处理 */
+syntax MemoryOps {
+    "mem::clear"    => "call @_aethos_memclear"
+    "mem::copy"     => "call @_aethos_memcpy"
+    "mem::set"      => "call @_aethos_memset"
+    "mem::compare"  => "call @_aethos_memcmp"
+}
+
+/* I/O 端口操作 - 底层硬件交互 */
+syntax IOOps {
+    "io::in8"       => "in al, dx"
+    "io::in16"      => "in ax, dx"
+    "io::in32"      => "in eax, dx"
+    "io::out8"      => "out dx, al"
+    "io::out16"     => "out dx, ax"
+    "io::out32"     => "out dx, eax"
+}
+
+/* 中断和异常处理 */
+syntax InterruptOps {
+    "int::enable"   => "sti"
+    "int::disable"  => "cli"
+    "int::return"   => "iretq"
+    "int::swapgs"   => "swapgs"
+}
+
+/* 虚拟内存管理 */
+syntax VirtualMemory {
+    "vm::enable"    => "mov rax, cr0; or rax, 0x80000000; mov cr0, rax"
+    "vm::disable"   => "mov rax, cr0; and rax, ~0x80000000; mov cr0, rax"
+    "vm::reload"    => "mov rax, cr3; mov cr3, rax"
+    "vm::invlpg"    => "invlpg [rax]"
+}
+
+/* 性能计数器和监测 */
+syntax PerformanceOps {
+    "perf::rdmsr"   => "rdmsr"
+    "perf::wrmsr"   => "wrmsr"
+    "perf::rdtsc"   => "rdtsc"
+    "perf::cpuid"   => "cpuid"
+}
+
+/* 特殊寄存器访问 */
+syntax RegisterOps {
+    "reg::read_cr0"  => "mov rax, cr0"
+    "reg::read_cr2"  => "mov rax, cr2"
+    "reg::read_cr3"  => "mov rax, cr3"
+    "reg::read_cr4"  => "mov rax, cr4"
+    "reg::write_cr0" => "mov cr0, rax"
+    "reg::write_cr3" => "mov cr3, rax"
+}
+
+/* ===================================================================
+ * Part 3: 集成示例 - 使用 map 和 syntax 的完整代码
+ * =================================================================== */
+
+/* 使用内存拓扑映射的 ACPI 初始化函数 */
+func acpi_init() {
+    /* 这个函数会使用 ACPI/DescriptionTableHeader 的类型信息 */
+    
+    /* cpu::cli 会被 syntax CPUInstructions 映射到 cli 指令 */
+    /* dbg::trace 会被 syntax DebugOps 映射到调试跟踪调用 */
+    
+    mem::copy()
+    mem::clear()
+    dbg::trace()
+}
+
+/* BIOS 数据区初始化 */
+func bios_init() {
+    /* 使用 BIOS/DataArea map 操作 BIOS 数据区 */
+    
+    /* I/O 操作示例 */
+    io::in8()
+    io::out32()
+    
+    /* 中断清除 */
+    int::disable()
+}
+
+/* 虚拟内存设置 */
+func setup_virtual_memory() {
+    /* 使用 CPU/PageTableEntry 和 Memory/PageTableEntry */
+    
+    vm::enable()
+    vm::reload()
+    
+    cpu::lfence()
+}
+
+/* ===================================================================
+ * Part 4: 验证节点 - 确保系统识别和处理这些定义
+ * =================================================================== */
+
+/* 这个特殊注释块用于验证编译器的处理状态 */
+metal {
+    /* 编译器应该在语义检查中识别所有上述的 map 和 syntax 定义 */
+    /* 并生成相应的验证报告 */
+    /* 本文件中定义了：*/
+    /*   - 10 个不同的内存映射 (map)*/
+    /*   - 7 个自定义语法块 (syntax)*/
+    /*   - 每个块都包含了完整的模式映射*/
+}

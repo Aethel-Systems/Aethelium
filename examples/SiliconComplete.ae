@@ -1,0 +1,91 @@
+Rimport Architecture
+
+/* 测试所有硅基语义的反斜杠前缀语法 */
+
+/* 测试1: 管道行为 */
+func test/pipeline/serialize(): Int {
+    silicon {
+        pipeline(behavior: \serialize, speculation: \block) {
+            let value: i64 = 42
+        }
+    }
+    return 0
+}
+
+/* 测试2: 微架构配置 */
+func test/microarch/efer(): Int {
+    silicon {
+        using CPU/Current {
+            MSR/EFER\Syscall/Enable = true
+            MSR/EFER\Nx/Enable = true
+            MSR/EFER\Long/Mode = true
+        }
+    }
+    return 0
+}
+
+/* 测试3: 缓存操作 */
+func test/cache/operations(addr: Int): Int {
+    silicon {
+        silicon\cache\flush(addr)
+    }
+    silicon {
+        silicon\cache\invalidate(addr)
+    }
+    return 0
+}
+
+/* 测试4: 预取操作 */
+func test/prefetch/operations(addr: Int): Int {
+    silicon {
+        silicon\prefetch(addr, hint: \T0, intent: \read)
+    }
+    silicon {
+        silicon\prefetch(addr, hint: \T1, intent: \write)
+    }
+    silicon {
+        silicon\prefetch(addr, hint: \T2, intent: \read)
+    }
+    silicon {
+        silicon\prefetch(addr, hint: \NTA, intent: \read)
+    }
+    return 0
+}
+
+/* 测试5: 综合工作流 */
+func test/comprehensive/workflow(buffer: Int): Int {
+    /* Stage 1: 序列化环境 */
+    silicon {
+        pipeline(behavior: \serialize, speculation: \block) {
+            let temp: i64 = 0
+        }
+    }
+    
+    /* Stage 2: 配置CPU特性 */
+    silicon {
+        using CPU/Current {
+            MSR/EFER\Nx/Enable = true
+        }
+    }
+    
+    /* Stage 3: 清空缓存 */
+    silicon {
+        silicon\cache\flush(buffer)
+    }
+    
+    /* Stage 4: 预取数据 */
+    silicon {
+        silicon\prefetch(buffer, hint: \T0, intent: \read)
+    }
+    
+    return 0
+}
+@entry
+func main(): Int {
+    test/pipeline/serialize()
+    test/microarch/efer()
+    test/cache/operations(0x100000)
+    test/prefetch/operations(0x200000)
+    test/comprehensive/workflow(0x300000)
+    return 0
+}

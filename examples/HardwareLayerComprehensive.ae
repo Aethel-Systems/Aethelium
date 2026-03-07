@@ -1,0 +1,435 @@
+// HardwareLayerComprehensive.ae
+// 硬件层综合示例：完整的系统启动、中断处理、硬件控制流
+// 展示物理寄存器绑定、端口I/O、ISA直通、ABI门等完整功能
+
+Rimport AEhardware
+Rimport sys/core
+
+// =========================================================
+// 第一部分：物理寄存器绑定与系统调用
+// =========================================================
+
+// 系统调用准备函数：将参数绑定到规范的x86-64系统调用寄存器
+@gate(type: \syscall)
+hardware func syscall/prepare(
+    sysnum: UInt64,
+    arg1: UInt64,
+    arg2: UInt64,
+    arg3: UInt64
+): UInt64 {
+    hardware {
+        // 强制绑定系统调用参数到物理寄存器
+        // rax: 系统调用号
+        // rdi, rsi, rdx: 前三个参数
+        var rax: reg<"rax", UInt64>
+        var rdi: reg<"rdi", UInt64>
+        var rsi: reg<"rsi", UInt64>
+        var rdx: reg<"rdx", UInt64>
+        
+        // 赋值触发机器码生成：MOV 指令
+        rax = sysnum
+        rdi = arg1
+        rsi = arg2
+        rdx = arg3
+        
+        // 生成 SYSCALL 指令
+        hardware\isa\syscall()
+        
+        // SYSCALL返回值在RAX中
+        return rax
+    }
+}
+
+// =========================================================
+// 第二部分：端口I/O与设备驱动
+// =========================================================
+
+// PS/2键盘端口定义与I/O操作
+let PS2/DATA/PORT = 0x60 as port<UInt8>
+let PS2/STATUS/PORT = 0x64 as port<UInt8>
+
+// 等待键盘就绪（轮询模式）
+hardware func ps2/wait/ready() {
+    loop {
+        var status: UInt8
+        
+        hardware {
+            // 读取端口状态：生成 IN AL, 0x64
+            status = PS2/STATUS/PORT\read()
+            
+            // 检查输出缓冲区满位（bit 0）
+            if ((status & 0x01) == 0x01) {
+                break
+            }
+            
+            // CPU暂停指令：PAUSE
+            hardware\isa\pause()
+        }
+    }
+}
+
+// 从键盘读取扫描码
+hardware func ps2/read/scancode(): UInt8 {
+    var scancode: UInt8
+    
+    hardware {
+        // 从PS/2数据端口读取：IN AL, 0x60
+        scancode = PS2/DATA/PORT\read()
+    }
+    
+    return scancode
+}
+
+// =========================================================
+// 第三部分：内存映射I/O与MMIO视图
+// =========================================================
+
+// APIC本地中断控制器寄存器定义
+@packed
+struct APIC/Registers {
+    id: UInt32
+    version: UInt32
+    tpr: UInt32
+    apr: UInt32
+    ppr: UInt32
+    eoi: UInt32
+    remote/read: UInt32
+    logical/dest: UInt32
+    dest/format: UInt32
+    spurious/intr: UInt32
+    isr: UInt32  // ISR寄存器组
+    tmr: UInt32  // TMR寄存器组
+    irr: UInt32  // IRR寄存器组
+}
+
+// 初始化APIC
+hardware func apic/init(apic/base: PhysAddr) {
+    hardware {
+        // 创建挥发性视图：禁止编译器优化，保证每次都访问硬件
+        let apic = apic/base as @volatile view<APIC/Registers>
+        
+        // 禁用APIC的虚假中断，启用APIC
+        apic\spurious/intr = 0x00000100 | 0x000000FF
+        
+        // 设置任务优先级为0（最高）
+        apic\tpr = 0x00000000
+        
+        // 清除待处理中断
+        apic\eoi = 0x00000000
+    }
+}
+
+// =========================================================
+// 第四部分：中断处理与栈帧
+// =========================================================
+
+// CPU压栈定义：中断发生时的数据结构
+@packed
+struct TrapFrame {
+    // 被硬件压栈的字段
+    error/code: UInt64
+    rip: UInt64
+    cs: UInt64
+    rflags: UInt64
+    rsp: UInt64
+    ss: UInt64
+}
+
+// 中断处理函数：Page Fault处理器
+@gate(type: \interrupt)
+hardware func page/fault/handler(frame: ptr<TrapFrame>) {
+    hardware {
+        // CR2寄存器包含导致缺页异常的虚拟地址
+        var fault/addr: UInt64
+        
+        // 读取控制寄存器
+        fault/addr = CPU/Current\Control\CR2
+        
+        // 从栈帧获取异常时的指令指针
+        var exception/rip: UInt64 = frame\rip
+        
+        // 可以在此处理缺页异常...
+        // 例如分配新页面或触发内存不足处理
+    }
+    
+    // 函数返回时自动生成 IRETQ 指令
+}
+
+// 通用异常处理：Double Fault（最严重的异常）
+@gate(type: \interrupt)
+hardware func double/fault/handler(frame: ptr<TrapFrame>) {
+    hardware {
+        // Double Fault 是致命的，通常需要重启系统
+        // 关闭中断
+        CPU/Flags\Interrupt/Enable = false
+        
+        // 无限长的死循环
+        loop {
+            hardware\isa\hlt()
+        }
+    }
+}
+
+// =========================================================
+// 第五部分：控制寄存器和标志位操作
+// =========================================================
+
+// 启用分页：初始化内存管理
+hardware func paging/enable(pml4/base: PhysAddr) {
+    hardware {
+        // CR3 = 页表基址
+        CPU/Current\Control\CR3 = pml4/base
+        
+        // 启用分页和写保护（在CR0中）
+        CPU/Current\Control\CR0\Paging/Enable = true
+        CPU/Current\Control\CR0\Write/Protect = true
+        
+        // 可选：启用NX（No eXecute）位
+        // CPU/MSR\EFER\NX/Enable = true
+    }
+}
+
+// 禁用中断的临界区保护
+hardware func critical/section/enter(): UInt64 {
+    var saved/flags: UInt64
+    
+    hardware {
+        // 保存当前标志状态
+        saved/flags = CPU/Flags\Value
+        
+        // 禁用中断（清除IF位）
+        CPU/Flags\Interrupt/Enable = false
+        
+        // 添加内存屏障确保所有之前的指令完成
+        hardware\isa\mfence()
+    }
+    
+    return saved/flags
+}
+
+hardware func critical/section/exit(saved/flags: UInt64) {
+    hardware {
+        // 恢复之前保存的标志状态
+        CPU/Flags\Value = saved/flags
+    }
+}
+
+// =========================================================
+// 第六部分：向量化与SIMD操作
+// =========================================================
+
+// 高速内存复制：使用256-bit AVX向量
+hardware func fast/memcpy(
+    dest: ptr<UInt8>,
+    src: ptr<UInt8>,
+    size: UInt64
+) {
+    hardware {
+        // 绑定YMM寄存器用于256-bit向量操作
+        var ymm0: reg<"ymm0", vector<UInt8, 32>>
+        var ymm1: reg<"ymm1", vector<UInt8, 32>>
+        var ymm2: reg<"ymm2", vector<UInt8, 32>>
+        var ymm3: reg<"ymm3", vector<UInt8, 32>>
+        
+        // 向量化复制（4×256bit = 128字节 per iteration）
+        var offset: UInt64 = 0
+        
+        loop {
+            if (offset + 128 > size) { break }
+            
+            // 从源地址读取4个YMM向量
+            ymm0 = src\vector/read<UInt8, 32>(offset + 0)
+            ymm1 = src\vector/read<UInt8, 32>(offset + 32)
+            ymm2 = src\vector/read<UInt8, 32>(offset + 64)
+            ymm3 = src\vector/read<UInt8, 32>(offset + 96)
+            
+            // 写入目标地址
+            dest\vector/write<UInt8, 32>(ymm0, offset + 0)
+            dest\vector/write<UInt8, 32>(ymm1, offset + 32)
+            dest\vector/write<UInt8, 32>(ymm2, offset + 64)
+            dest\vector/write<UInt8, 32>(ymm3, offset + 96)
+            
+            offset = offset + 128
+        }
+        
+        // 处理剩余字节（如果size不是128的倍数）
+        while (offset < size) {
+            let byte = src[offset] as UInt8
+            dest[offset] = byte
+            offset = offset + 1
+        }
+    }
+}
+
+// =========================================================
+// 第七部分：形态置换与上下文切换
+// =========================================================
+
+// 线程上下文结构
+@packed
+struct ThreadContext {
+    rax: UInt64
+    rbx: UInt64
+    rcx: UInt64
+    rdx: UInt64
+    rsi: UInt64
+    rdi: UInt64
+    rbp: UInt64
+    r8: UInt64
+    r9: UInt64
+    r10: UInt64
+    r11: UInt64
+    r12: UInt64
+    r13: UInt64
+    r14: UInt64
+    r15: UInt64
+    rsp: UInt64
+    rip: UInt64
+    page/table: PhysAddr
+}
+
+// 裸体函数：完全由开发者控制执行流
+@gate(type: \naked)
+hardware func thread/switch(
+    prev/ctx: ptr<ThreadContext>,
+    next/ctx: ptr<ThreadContext>
+) {
+    hardware {
+        // 保存当前线程的完整寄存器状态
+        hardware\state\snapshot(into: prev/ctx)
+        
+        // 形态置换：字面意义上的"变身"
+        // morph块是一个控制流终止点，代码在此后不再作为传统函数执行
+        morph {
+            // 加载下一个线程的栈指针
+            var rspVal: UInt64 = next/ctx\rsp
+            
+            // 加载下一个线程的页表
+            var cr3Val: UInt64 = next/ctx\page/table
+            
+            // 设置段选择子（假设内核代码段为0x08）
+            reg<"cs"> = 0x08
+            reg<"ss"> = 0x10
+            
+            // 硬件级跳转到下一个线程的指令指针
+            goto next/ctx\rip
+        }
+    }
+}
+
+// =========================================================
+// 第八部分：MSR操作与CPU特性控制
+// =========================================================
+
+// 启用系统调用扩展
+hardware func syscall/enable(kernel/entry: UInt64) {
+    hardware {
+        // 设置SYSCALL入口点地址
+        CPU/MSR\LSTAR = kernel/entry
+        
+        // 启用SYSCALL/SYSRET指令
+        CPU/MSR\EFER\Syscall/Enable = true
+        
+        // 设置返回栈和段选择子
+        CPU/MSR\STAR = (0x10 << 48) | (0x08 << 32)
+    }
+}
+
+// =========================================================
+// 第九部分：完整的内核引导示例
+// =========================================================
+
+@entry
+@gate(type: \efi)
+hardware func kernel/entry/point(
+    handle: ptr<UInt64>,
+    table: ptr<UInt64>
+): UInt64 {
+    hardware {
+        // 1. 关闭中断（防止中断时栈还未初始化）
+        CPU/Flags\Interrupt/Enable = false
+        
+        // 2. 初始化栈指针到高地址（假设物理地址0x1000000）
+        var rsp/init: UInt64 = 0xFFFF800000100000
+        reg<"rsp"> = rsp/init
+        
+        // 3. 加载GDT（全局描述符表）
+        // 假设GDT表在物理地址0x2000
+        var gdt/ptr: UInt64 = 0x2000
+        hardware\isa\lgdt(gdt/ptr as ptr<UInt8>)
+        
+        // 4. 初始化分页
+        var pml4/addr: UInt64 = 0x100000  // 使用 UInt64 而非 PhysAddr
+        paging/enable(pml4/addr)
+        
+        // 5. 初始化APIC
+        var apic/addr: PhysAddr = 0xFEE00000
+        apic/init(apic/addr)
+        
+        // 6. 启用SYSCALL
+        var syscall/entry: UInt64 = 0xFFFF800000001000
+        syscall/enable(syscall/entry)
+        
+        // 7. 重新启用中断
+        CPU/Flags\Interrupt/Enable = true
+        
+        // 8. 跳到主内核代码
+        // 这通常会调用一个Rust或其他高级语言的main函数
+        return 0
+    }
+}
+
+// =========================================================
+// 第十部分：硬件特性检测（CPUID）
+// =========================================================
+
+struct CPUID/Features {
+    eax: UInt32
+    ebx: UInt32
+    ecx: UInt32
+    edx: UInt32
+}
+
+// 执行CPUID并获取特性信息
+hardware func cpuid/get/features(feature/leaf: UInt32): CPUID/Features {
+    hardware {
+        var rax: reg<"rax", UInt64>
+        var rbx: reg<"rbx", UInt64>
+        var rcx: reg<"rcx", UInt64>
+        var rdx: reg<"rdx", UInt64>
+        
+        // 设置CPUID参数
+        rax = feature/leaf as UInt64
+        
+        // 执行CPUID指令
+        hardware\isa\cpuid()
+        
+        // 结果在EAX, EBX, ECX, EDX中
+        return CPUID/Features {
+            eax: rax as UInt32,
+            ebx: rbx as UInt32,
+            ecx: rcx as UInt32,
+            edx: rdx as UInt32
+        }
+    }
+}
+
+// =========================================================
+// 测试函数：验证硬件层的各种特性
+// =========================================================
+
+hardware func test/all/features(): UInt64 {
+    hardware {
+        // 测试PS/2设备就绪
+        ps2/wait/ready()
+        
+        // 测试CPUID
+        let features = cpuid/get/features(1)
+        
+        // 测试关键区保护
+        let flags = critical/section/enter()
+        critical/section/exit(flags)
+        
+        return 0
+    }
+}
