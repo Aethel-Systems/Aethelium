@@ -1,3 +1,18 @@
+; Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+;
+; This program is free software: you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation, either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 ; =============================================================================
 ; AethelOS Assembly Orchestration Layer - Binary Format Emission Engine
 ; toolsASM/src/core/binary_emit.asm
@@ -26,10 +41,6 @@
 %define O_CREAT         0x00000200  ; Create if doesn't exist
 %define O_TRUNC         0x00000400  ; Truncate to zero
 %define FILE_PERMS      0644        ; rw-r--r-- permissions
-
-%define SYS_WRITE       0x2000004   ; write(fd, buf, count)
-%define SYS_OPEN        0x2000005   ; open(path, flags, mode)
-%define SYS_CLOSE       0x2000006   ; close(fd)
 
 ; =============================================================================
 ; DATA SECTION - Read-only tables and constants
@@ -80,6 +91,10 @@ crc32_table:
 
 section .text
 
+extern _syscall_open
+extern _syscall_write
+extern _syscall_close
+
 global _write_aki_binary
 global _write_srv_binary
 global _write_hda_binary
@@ -124,8 +139,7 @@ _write_aki_binary:
     mov rdi, r12                ; arg1 = filename
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC  ; arg2 = flags
     mov rdx, FILE_PERMS         ; arg3 = mode
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .aki_error
@@ -138,8 +152,7 @@ _write_aki_binary:
     mov rdi, r10                ; arg1 = fd
     mov rsi, r13                ; arg2 = buffer
     mov rdx, r8                 ; arg3 = size
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     mov r11, rax                ; r11 = bytes written
     
@@ -147,8 +160,7 @@ _write_aki_binary:
     ; Close file: close(fd)
     ; ========================================================================
     mov rdi, r10
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     ; Verify write completed
     cmp r11, r8
@@ -199,8 +211,7 @@ _write_srv_binary:
     mov rdi, r12
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .srv_error
@@ -210,14 +221,12 @@ _write_srv_binary:
     mov rdi, r10
     mov rsi, r13
     mov rdx, r8
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     mov r11, rax
     
     mov rdi, r10
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     cmp r11, r8
     jne .srv_error
@@ -267,8 +276,7 @@ _write_hda_binary:
     mov rdi, r12
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .hda_error
@@ -278,14 +286,12 @@ _write_hda_binary:
     mov rdi, r10
     mov rsi, r13
     mov rdx, r8
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     mov r11, rax
     
     mov rdi, r10
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     cmp r11, r8
     jne .hda_error
@@ -336,8 +342,7 @@ _write_aetb_binary:
     mov rdi, r12
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .aetb_error
@@ -347,14 +352,12 @@ _write_aetb_binary:
     mov rdi, r10
     mov rsi, r13
     mov rdx, r8
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     mov r11, rax
     
     mov rdi, r10
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     cmp r11, r8
     jne .aetb_error
@@ -424,8 +427,7 @@ _write_pe32plus_efi:
     mov rdi, r12                ; arg1 = filename
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC  ; arg2 = flags
     mov rdx, FILE_PERMS         ; arg3 = mode
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .pe_error
@@ -438,8 +440,7 @@ _write_pe32plus_efi:
     mov rdi, r14                ; arg1 = fd
     mov rsi, r13                ; arg2 = PE buffer
     mov rdx, r8                 ; arg3 = size
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     mov r10, rax                ; r10 = bytes written
     
@@ -447,8 +448,7 @@ _write_pe32plus_efi:
     ; 关闭文件: close(fd)
     ; ========================================================================
     mov rdi, r14
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     ; 验证写入完整性
     cmp r10, r8
@@ -467,4 +467,3 @@ _write_pe32plus_efi:
     pop rbx
     pop rbp
     ret
-

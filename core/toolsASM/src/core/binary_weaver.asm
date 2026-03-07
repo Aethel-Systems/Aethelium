@@ -1,3 +1,18 @@
+; Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+;
+; This program is free software: you can redistribute it and/or modify
+; it under the terms of the GNU General Public License as published by
+; the Free Software Foundation, either version 3 of the License, or
+; (at your option) any later version.
+;
+; This program is distributed in the hope that it will be useful,
+; but WITHOUT ANY WARRANTY; without even the implied warranty of
+; MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+; GNU General Public License for more details.
+;
+; You should have received a copy of the GNU General Public License
+; along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 ; =============================================================================
 ; AethelOS Assembly Orchestration Layer - Complete [Full Structure] Weaver
 ; toolsASM/src/core/binary_weaver.asm
@@ -28,10 +43,6 @@
 %define O_CREAT         0x00000200
 %define O_TRUNC         0x00000400
 %define FILE_PERMS      0o644
-
-%define SYS_WRITE       0x2000004
-%define SYS_OPEN        0x2000005
-%define SYS_CLOSE       0x2000006
 
 ; =============================================================================
 ; Alignment Macros (used during structure construction)
@@ -135,6 +146,10 @@ crc32_table:
 ; =============================================================================
 
 section .text
+
+extern _syscall_open
+extern _syscall_write
+extern _syscall_close
 
 global _weave_aki_structure
 global _weave_srv_structure
@@ -447,8 +462,7 @@ _weave_aki_structure:
     mov rdi, [r12 + INPUT_FILENAME_OFF]  ; filename
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .aki_error
@@ -462,8 +476,7 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, rbx
     mov rdx, AETHEL_HEADER_SIZE
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, AETHEL_HEADER_SIZE
     jne .aki_write_error
@@ -475,8 +488,7 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, r13           ; ActFlow buffer
     mov rdx, r14           ; ActFlow size
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r14
     jne .aki_write_error
@@ -510,8 +522,7 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_MIRROR_PTR_OFF]
     mov rdx, r11
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r11
     jne .aki_write_error
@@ -541,8 +552,7 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_TRUTH_PTR_OFF]
     mov rdx, r11
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r11
     jne .aki_write_error
@@ -562,8 +572,7 @@ _weave_aki_structure:
     
 .aki_close_file:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     test rax, rax
     js .aki_error
@@ -574,8 +583,7 @@ _weave_aki_structure:
     
 .aki_write_error:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
 .aki_error:
     mov eax, -1
@@ -757,8 +765,7 @@ _weave_hda_structure:
     mov rdi, [r12 + INPUT_FILENAME_OFF]
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .hda_error
@@ -769,8 +776,7 @@ _weave_hda_structure:
     mov rdi, r8
     mov rsi, rbx
     mov rdx, AETHEL_HEADER_SIZE
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, AETHEL_HEADER_SIZE
     jne .hda_write_error
@@ -779,8 +785,7 @@ _weave_hda_structure:
     mov rdi, r8
     mov rsi, r13
     mov rdx, r14
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r14
     jne .hda_write_error
@@ -793,16 +798,14 @@ _weave_hda_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_MIRROR_PTR_OFF]
     mov rdx, r11
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r11
     jne .hda_write_error
     
 .hda_close_file:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     test rax, rax
     js .hda_error
@@ -812,8 +815,7 @@ _weave_hda_structure:
     
 .hda_write_error:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
 .hda_error:
     mov eax, -1
@@ -975,8 +977,7 @@ _weave_srv_structure:
     mov rdi, [r12 + INPUT_FILENAME_OFF]
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .srv_error
@@ -987,8 +988,7 @@ _weave_srv_structure:
     mov rdi, r8
     mov rsi, rbx
     mov rdx, AETHEL_HEADER_SIZE
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, AETHEL_HEADER_SIZE
     jne .srv_write_error
@@ -997,8 +997,7 @@ _weave_srv_structure:
     mov rdi, r8
     mov rsi, r13
     mov rdx, r14
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r14
     jne .srv_write_error
@@ -1011,8 +1010,7 @@ _weave_srv_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_MIRROR_PTR_OFF]
     mov rdx, r11
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r11
     jne .srv_write_error
@@ -1026,16 +1024,14 @@ _weave_srv_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_TRUTH_PTR_OFF]
     mov rdx, r10
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r10
     jne .srv_write_error
     
 .srv_close_file:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     test rax, rax
     js .srv_error
@@ -1045,8 +1041,7 @@ _weave_srv_structure:
     
 .srv_write_error:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
 .srv_error:
     mov eax, -1
@@ -1226,8 +1221,7 @@ _weave_aetb_structure:
     mov rdi, [r12 + INPUT_FILENAME_OFF]
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     
     test rax, rax
     js .aetb_error
@@ -1238,8 +1232,7 @@ _weave_aetb_structure:
     mov rdi, r8
     mov rsi, rbx
     mov rdx, AETHEL_HEADER_SIZE
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, AETHEL_HEADER_SIZE
     jne .aetb_write_error
@@ -1248,8 +1241,7 @@ _weave_aetb_structure:
     mov rdi, r8
     mov rsi, r13
     mov rdx, r14
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r14
     jne .aetb_write_error
@@ -1262,8 +1254,7 @@ _weave_aetb_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_MIRROR_PTR_OFF]
     mov rdx, r11
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r11
     jne .aetb_write_error
@@ -1277,16 +1268,14 @@ _weave_aetb_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_TRUTH_PTR_OFF]
     mov rdx, r10
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     
     cmp rax, r10
     jne .aetb_write_error
     
 .aetb_close_file:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
     test rax, rax
     js .aetb_error
@@ -1296,8 +1285,7 @@ _weave_aetb_structure:
     
 .aetb_write_error:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     
 .aetb_error:
     mov eax, -1
@@ -1347,8 +1335,7 @@ _weave_bin_structure:
     mov rdi, [r12 + INPUT_FILENAME_OFF]
     mov rsi, O_WRONLY | O_CREAT | O_TRUNC
     mov rdx, FILE_PERMS
-    mov rax, SYS_OPEN
-    syscall
+    call _syscall_open
     test rax, rax
     js .bin_error
     mov r8, rax
@@ -1377,16 +1364,14 @@ _weave_bin_structure:
     mov rdi, r8
     lea rsi, [rsp]
     mov rdx, 64
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     cmp rax, 64
     jne .bin_write_error
 
     mov rdi, r8
     mov rsi, r13
     mov rdx, r14
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     cmp rax, r14
     jne .bin_write_error
     jmp .bin_close
@@ -1396,15 +1381,13 @@ _weave_bin_structure:
     lea rsi, [r13 + r15]
     mov rdx, r14
     sub rdx, r15
-    mov rax, SYS_WRITE
-    syscall
+    call _syscall_write
     cmp rax, rdx
     jne .bin_write_error
 
 .bin_close:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
     test rax, rax
     js .bin_error
     xor eax, eax
@@ -1412,8 +1395,7 @@ _weave_bin_structure:
 
 .bin_write_error:
     mov rdi, r8
-    mov rax, SYS_CLOSE
-    syscall
+    call _syscall_close
 
 .bin_error:
     mov eax, -1

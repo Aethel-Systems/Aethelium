@@ -1,4 +1,21 @@
 /*
+ * Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/*
  * Aethelium Compiler (aethelc)
  * Compiler for .ae source files to ELF binaries
  * 
@@ -110,7 +127,7 @@ typedef struct {
 } Lexer;
 
 typedef struct {
-    Token *tokens;
+    Token **tokens;
     size_t count;
     size_t capacity;
 } TokenList;
@@ -526,7 +543,7 @@ static void tokenize(Lexer *lexer, TokenList *token_list) {
     token_list->tokens = NULL;
     token_list->count = 0;
     token_list->capacity = 256;
-    token_list->tokens = (Token *)malloc(token_list->capacity * sizeof(Token *));
+    token_list->tokens = (Token **)malloc(token_list->capacity * sizeof(Token *));
 
     Token *token = NULL;
     do {
@@ -538,7 +555,7 @@ static void tokenize(Lexer *lexer, TokenList *token_list) {
                                                      token_list->capacity * sizeof(Token *));
         }
         
-        ((Token **)token_list->tokens)[token_list->count++] = token;
+        token_list->tokens[token_list->count++] = token;
     } while (token->type != TOK_EOF);
 }
 
@@ -651,7 +668,7 @@ int main_legacy(int argc, char *argv[]) {
     /* Check for Rimport usage */
     bool has_rimport = false;
     for (size_t i = 0; i < tokens.count; i++) {
-        Token *token = ((Token **)tokens.tokens)[i];
+        Token *token = tokens.tokens[i];
         if (token->type == TOK_RIMPORT) {
             has_rimport = true;
             break;

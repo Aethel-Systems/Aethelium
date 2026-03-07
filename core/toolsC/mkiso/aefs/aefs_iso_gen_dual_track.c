@@ -1,4 +1,21 @@
 /*
+ * Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/*
  * AethelOS ISO 生成器 - 扩展：双轨制架构（Boot System + install.lz 数据包）
  *
  * 这个模块扩展了原有的 aefs_iso_gen.c，实现新的架构：

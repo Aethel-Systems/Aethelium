@@ -1,3 +1,18 @@
+# Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program. If not, see <https://www.gnu.org/licenses/>.
+
 # ============================================================================
 # Aethelium Core Build System
 # Migrated from AethelOS core bootstrap compiler chain
@@ -5,7 +20,13 @@
 
 .PHONY: all build-dirs compilerCore check-platform clean distclean help status
 
-export UNAME_S := $(shell uname -s)
+ifeq ($(OS),Windows_NT)
+export UNAME_S := Windows_NT
+export UNAME_M := $(PROCESSOR_ARCHITECTURE)
+else
+export UNAME_S := $(shell uname -s 2>/dev/null)
+export UNAME_M := $(shell uname -m 2>/dev/null)
+endif
 export ROOT := $(CURDIR)
 export BUILD_DIR := $(ROOT)/build
 export OUTPUT_DIR := $(BUILD_DIR)/output
@@ -18,41 +39,126 @@ export TOOLS_ASM_DIR := $(CORE_DIR)/toolsASM
 export TOOLS_ASM_INCLUDE := $(TOOLS_ASM_DIR)/include
 export TOOLS_ASM_SRC := $(TOOLS_ASM_DIR)/src
 
-# Toolchain
-ifeq ($(UNAME_S),Darwin)
-	export PLATFORM := darwinX64
-	export NATIVE_CC ?= clang
-	export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -arch x86_64
-else ifeq ($(UNAME_S),Linux)
-	export PLATFORM := linuxX64
-	export NATIVE_CC ?= clang
-	export NATIVE_CFLAGS := -Wall -Wextra -O2 -g
+MINGW_X64_GCC := $(shell command -v x86_64-w64-mingw32-gcc 2>/dev/null)
+os ?= native
+ifeq ($(os),win)
+TARGET_OS := windows
 else
-	$(error Unsupported platform: $(UNAME_S))
+TARGET_OS := native
 endif
 
+# Toolchain common flags
+export NATIVE_LDFLAGS :=
+export NATIVE_LDLIBS :=
+
+# Toolchain
 ifeq ($(UNAME_S),Darwin)
-	NASM_FORMAT := macho64
-else
-	NASM_FORMAT := elf64
+ifeq ($(TARGET_OS),windows)
+ifeq ($(MINGW_X64_GCC),)
+$(error TARGET_OS=windows requires x86_64-w64-mingw32-gcc in PATH)
 endif
+export PLATFORM := windowsX64
+export NATIVE_CC ?= x86_64-w64-mingw32-gcc
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -DWIN32_LEAN_AND_MEAN
+export NATIVE_LDLIBS += -lkernel32
+else
+export PLATFORM := darwinX64
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -arch x86_64
+endif
+else ifeq ($(UNAME_S),Linux)
+export PLATFORM := linuxX64
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g
+else ifeq ($(UNAME_S),Windows_NT)
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -DWIN32_LEAN_AND_MEAN
+export NATIVE_LDLIBS += -lkernel32
+ifneq (,$(filter ARM64 AARCH64 arm64 aarch64,$(UNAME_M)))
+export PLATFORM := windowsARM64
+export NATIVE_CFLAGS += --target=x86_64-w64-mingw32
+export NATIVE_LDFLAGS += --target=x86_64-w64-mingw32
+else
+export PLATFORM := windowsX64
+endif
+else ifneq (,$(findstring MINGW,$(UNAME_S)))
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -DWIN32_LEAN_AND_MEAN
+export NATIVE_LDLIBS += -lkernel32
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+export PLATFORM := windowsARM64
+export NATIVE_CFLAGS += --target=x86_64-w64-mingw32
+export NATIVE_LDFLAGS += --target=x86_64-w64-mingw32
+else
+export PLATFORM := windowsX64
+endif
+else ifneq (,$(findstring MSYS,$(UNAME_S)))
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -DWIN32_LEAN_AND_MEAN
+export NATIVE_LDLIBS += -lkernel32
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+export PLATFORM := windowsARM64
+export NATIVE_CFLAGS += --target=x86_64-w64-mingw32
+export NATIVE_LDFLAGS += --target=x86_64-w64-mingw32
+else
+export PLATFORM := windowsX64
+endif
+else ifneq (,$(findstring CYGWIN,$(UNAME_S)))
+export NATIVE_CC ?= clang
+export NATIVE_CFLAGS := -Wall -Wextra -O2 -g -DWIN32_LEAN_AND_MEAN
+export NATIVE_LDLIBS += -lkernel32
+ifneq (,$(filter arm64 aarch64,$(UNAME_M)))
+export PLATFORM := windowsARM64
+export NATIVE_CFLAGS += --target=x86_64-w64-mingw32
+export NATIVE_LDFLAGS += --target=x86_64-w64-mingw32
+else
+export PLATFORM := windowsX64
+endif
+else
+$(error Unsupported platform: $(UNAME_S))
+endif
+
+ifneq (,$(filter windowsX64 windowsARM64,$(PLATFORM)))
+NASM_FORMAT := win64
+else ifeq ($(UNAME_S),Darwin)
+NASM_FORMAT := macho64
+else
+NASM_FORMAT := elf64
+endif
+ifeq ($(NASM_FORMAT),win64)
+NASM_FLAGS := -f $(NASM_FORMAT) -g -F cv8
+else
 NASM_FLAGS := -f $(NASM_FORMAT) -g -F dwarf
+endif
 NASM_INCLUDE := -I$(TOOLS_ASM_INCLUDE)/
 
 # Output binary
-export COMPILER_CORE := $(OUTPUT_DIR)/aethelc
+ifeq ($(NASM_FORMAT),win64)
+EXE_EXT := .exe
+OBJ_EXT := .obj
+else
+EXE_EXT :=
+OBJ_EXT := .o
+endif
+export COMPILER_CORE := $(OUTPUT_DIR)/aethelc$(EXE_EXT)
 
 # toolsC/aetb
 AETB_GEN_SRC := $(TOOLS_C_DIR)/aetb/src/aetb_gen.c
-AETB_GEN_OBJ := $(patsubst $(ROOT)/%.c,$(OUTPUT_DIR)/%.o,$(AETB_GEN_SRC))
+AETB_GEN_OBJ := $(patsubst $(ROOT)/%.c,$(OUTPUT_DIR)/%$(OBJ_EXT),$(AETB_GEN_SRC))
 
 # toolsASM
 TOOLS_ASM_MAIN := $(TOOLS_ASM_SRC)/main.asm
 TOOLS_ASM_EMIT := $(TOOLS_ASM_SRC)/core/binary_emit.asm
 TOOLS_ASM_WEAVER := $(TOOLS_ASM_SRC)/core/binary_weaver.asm
 TOOLS_ASM_SYSCALL_MACOS := $(TOOLS_ASM_SRC)/core/syscall_macos.asm
-TOOLS_ASM_SRCS := $(TOOLS_ASM_MAIN) $(TOOLS_ASM_EMIT) $(TOOLS_ASM_WEAVER) $(TOOLS_ASM_SYSCALL_MACOS)
-TOOLS_ASM_OBJS := $(patsubst $(ROOT)/%.asm,$(OUTPUT_DIR)/%.o,$(TOOLS_ASM_SRCS))
+TOOLS_ASM_OS_WINDOWS := $(TOOLS_ASM_SRC)/core/os_windows.asm
+ifeq ($(NASM_FORMAT),win64)
+TOOLS_ASM_OS_SRC := $(TOOLS_ASM_OS_WINDOWS)
+else
+TOOLS_ASM_OS_SRC := $(TOOLS_ASM_SYSCALL_MACOS)
+endif
+TOOLS_ASM_SRCS := $(TOOLS_ASM_MAIN) $(TOOLS_ASM_EMIT) $(TOOLS_ASM_WEAVER) $(TOOLS_ASM_OS_SRC)
+TOOLS_ASM_OBJS := $(patsubst $(ROOT)/%.asm,$(OUTPUT_DIR)/%$(OBJ_EXT),$(TOOLS_ASM_SRCS))
 
 # toolsC/compiler sources
 COMPILER_C_SRC_DIR := $(TOOLS_C_DIR)/compiler/src
@@ -109,7 +215,7 @@ COMPILER_C_SRCS := $(COMPILER_C_MAIN) $(COMPILER_C_AETHELC) \
 	$(COMPILER_C_FORMAT_SRV) $(COMPILER_C_FORMAT_AX) \
 	$(COMPILER_C_FORMAT_PE) $(COMPILER_C_FORMAT_PE_INDUSTRIAL) $(COMPILER_C_FORMAT_LET) $(COMPILER_C_FORMAT_LET_WEAVER)
 
-COMPILER_C_OBJS := $(patsubst $(ROOT)/%.c,$(OUTPUT_DIR)/%.o,$(COMPILER_C_SRCS))
+COMPILER_C_OBJS := $(patsubst $(ROOT)/%.c,$(OUTPUT_DIR)/%$(OBJ_EXT),$(COMPILER_C_SRCS))
 
 all: compilerCore
 
@@ -118,8 +224,12 @@ build-dirs:
 
 check-platform:
 	@echo "OS: $(UNAME_S)"
+	@echo "Build selector (os): $(os)"
 	@echo "Platform: $(PLATFORM)"
 	@echo "Native CC: $(NATIVE_CC)"
+	@echo "Native CFLAGS: $(NATIVE_CFLAGS)"
+	@echo "Native LDFLAGS: $(NATIVE_LDFLAGS)"
+	@echo "Native LDLIBS: $(NATIVE_LDLIBS)"
 	@echo "NASM format: $(NASM_FORMAT)"
 
 compilerCore: $(COMPILER_CORE)
@@ -135,10 +245,10 @@ $(COMPILER_CORE): $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS) | build-d
 	@echo "  Assembly Objects: $(words $(TOOLS_ASM_OBJS)) files"
 	@echo "  Output: $(COMPILER_CORE)"
 	@echo "================================================================================"
-	$(NATIVE_CC) $(NATIVE_CFLAGS) -o $@ $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS)
+	$(NATIVE_CC) $(NATIVE_CFLAGS) $(NATIVE_LDFLAGS) -o $@ $(COMPILER_C_OBJS) $(AETB_GEN_OBJ) $(TOOLS_ASM_OBJS) $(NATIVE_LDLIBS)
 	@echo "✓ Core Compiler linked successfully: $@"
 
-$(OUTPUT_DIR)/core/toolsC/compiler/%.o: $(ROOT)/core/toolsC/compiler/%.c
+$(OUTPUT_DIR)/core/toolsC/compiler/%$(OBJ_EXT): $(ROOT)/core/toolsC/compiler/%.c
 	@mkdir -p $(dir $@)
 	@echo "  [CC] Compiling: $(notdir $<)"
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) \
@@ -162,7 +272,7 @@ $(OUTPUT_DIR)/core/toolsC/compiler/%.o: $(ROOT)/core/toolsC/compiler/%.c
 		-I$(TOOLS_C_DIR)/aetb/src \
 		$< -o $@
 
-$(OUTPUT_DIR)/core/toolsC/aetb/%.o: $(ROOT)/core/toolsC/aetb/%.c
+$(OUTPUT_DIR)/core/toolsC/aetb/%$(OBJ_EXT): $(ROOT)/core/toolsC/aetb/%.c
 	@echo "[CC] Compiling AETB Generator: $<"
 	@mkdir -p $(@D)
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) \
@@ -170,12 +280,12 @@ $(OUTPUT_DIR)/core/toolsC/aetb/%.o: $(ROOT)/core/toolsC/aetb/%.c
 		-I$(TOOLS_C_DIR)/aetb/src \
 		$< -o $@
 
-$(OUTPUT_DIR)/core/toolsC/mkiso/%.o: $(ROOT)/core/toolsC/mkiso/%.c
+$(OUTPUT_DIR)/core/toolsC/mkiso/%$(OBJ_EXT): $(ROOT)/core/toolsC/mkiso/%.c
 	@mkdir -p $(dir $@)
 	@echo "  [CC] Compiling mkiso source: $(notdir $<)"
 	$(NATIVE_CC) -c $(NATIVE_CFLAGS) -I$(TOOLS_C_INCLUDE) $< -o $@
 
-$(OUTPUT_DIR)/core/toolsASM/%.o: $(ROOT)/core/toolsASM/%.asm
+$(OUTPUT_DIR)/core/toolsASM/%$(OBJ_EXT): $(ROOT)/core/toolsASM/%.asm
 	@mkdir -p $(dir $@)
 	@echo "  [NASM] Assembling: $(notdir $<)"
 	nasm $(NASM_FLAGS) $(NASM_INCLUDE) -o $@ $<
@@ -193,6 +303,7 @@ status:
 
 help:
 	@echo "make all            - Build core compiler"
+	@echo "make all os=win     - Cross-build Windows x64 on macOS (mingw-w64 required)"
 	@echo "make compilerCore   - Build core compiler"
 	@echo "make check-platform - Show platform/toolchain info"
 	@echo "make clean          - Remove build outputs"

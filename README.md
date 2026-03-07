@@ -49,7 +49,7 @@ Aethelium/
 | **Assembler** | NASM 2.15+ | 用于处理后端二进制编排 |
 | **Build System** | GNU Make 4.0+ | 自动化构建管理 |
 
-*支持架构：Darwin (macOS) x86_64/arm64, Linux x86_64*
+*源码编译支持架构：Darwin (macOS) x86_64/arm64, 最终产物支持：macOSx86_64/arm64和windows x86_64*
 
 ### 编译命令
 
@@ -90,9 +90,23 @@ make status         # 查看当前构建产物信息
 
 ---
 
+## 使用手册
+
+*    **Aethelium语言参考手册.md**: 语言快速参考
+*    **硬件层手册_机器码对照版_2026-03-06.md**: 硬件层对照表
+
+
 ## ⚠️ 说明
 
 *   **目标产物**: 本工具链生成的二进制文件通常为 **Aethelium Native** 格式或 **UEFI PE** 格式，无法直接在 Windows 或 Linux 宿主机上运行（除非在虚拟机或裸机环境中）。
 *   **交叉编译**: 本仓库提供的工具链本质上是运行在宿主机上的交叉编译器 (Cross-Compiler)。
+
+---
+
+## 📄 许可证 (License)
+
+本项目采用 **GNU General Public License v3.0 (GPLv3)** 开源协议。
+
+**Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.**
 
 ---

@@ -1,3 +1,20 @@
+/*
+ * Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
 #include "let_weaver_bridge.h"
 
 #include "let_format.h"
@@ -67,11 +84,23 @@ _Static_assert(offsetof(WeaverInput, entry_encoding) == 192, "weaver input offse
 _Static_assert(offsetof(WeaverInput, bin_flags) == 200, "weaver input offset mismatch");
 _Static_assert(offsetof(WeaverInput, bin_entry_offset) == 208, "weaver input offset mismatch");
 
-extern int weave_aki_structure(void *input);
-extern int weave_srv_structure(void *input);
-extern int weave_hda_structure(void *input);
-extern int weave_aetb_structure(void *input);
-extern int weave_bin_structure(void *input);
+#if defined(_WIN64) && defined(__x86_64__)
+#define AETHEL_ASM_ABI __attribute__((sysv_abi))
+#else
+#define AETHEL_ASM_ABI
+#endif
+
+#if defined(_WIN64)
+#define AETHEL_WEAVER_ASM_NAME(sym) __asm__("_" #sym)
+#else
+#define AETHEL_WEAVER_ASM_NAME(sym)
+#endif
+
+extern AETHEL_ASM_ABI int weave_aki_structure(void *input) AETHEL_WEAVER_ASM_NAME(weave_aki_structure);
+extern AETHEL_ASM_ABI int weave_srv_structure(void *input) AETHEL_WEAVER_ASM_NAME(weave_srv_structure);
+extern AETHEL_ASM_ABI int weave_hda_structure(void *input) AETHEL_WEAVER_ASM_NAME(weave_hda_structure);
+extern AETHEL_ASM_ABI int weave_aetb_structure(void *input) AETHEL_WEAVER_ASM_NAME(weave_aetb_structure);
+extern AETHEL_ASM_ABI int weave_bin_structure(void *input) AETHEL_WEAVER_ASM_NAME(weave_bin_structure);
 
 typedef struct {
     uint8_t *file_buf;

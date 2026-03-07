@@ -1,4 +1,21 @@
 /*
+ * Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/*
  * AethelOS Aethelium Compiler - Main Driver
  * aethelc: 编译器与链接器的主入口点
  *
@@ -52,7 +69,9 @@
 #include <time.h>
 #include <unistd.h>
 #include <ctype.h>
+#ifndef _WIN32
 #include <sys/wait.h>
+#endif
 #include <sys/stat.h>
 
 #define MAX_INPUT_FILES 128
@@ -1014,10 +1033,12 @@ static int compile_inline_asm_to_bin(const char *input_file,
     int asm_fd = -1;
     FILE *asm_fp = NULL;
     int rc = -1;
-    pid_t pid;
     int status = 0;
     int switched64 = 0;
     size_t i;
+#ifndef _WIN32
+    pid_t pid;
+#endif
 
     if (!input_file || !output_file) return 0;
     source = read_file(input_file);
@@ -1071,6 +1092,24 @@ static int compile_inline_asm_to_bin(const char *input_file,
         fprintf(stderr, "[ASM-BIN] direct NASM pipeline: %s -> %s\n", input_file, output_file);
     }
 
+#ifdef _WIN32
+    {
+        char cmd[8192];
+        int n = snprintf(cmd, sizeof(cmd), "nasm -f bin -o \"%s\" \"%s\"", output_file, asm_tmp);
+        if (n < 0 || (size_t)n >= sizeof(cmd)) {
+            unlink(asm_tmp);
+            free_asm_lines(lines, line_count);
+            return -1;
+        }
+        status = system(cmd);
+        if (status == 0 && file_size_or_neg(output_file) >= 0) {
+            rc = 1;
+        } else {
+            unlink(output_file);
+            rc = -1;
+        }
+    }
+#else
     pid = fork();
     if (pid == 0) {
         execlp("nasm", "nasm", "-f", "bin", "-o", output_file, asm_tmp, (char *)NULL);
@@ -1093,6 +1132,7 @@ static int compile_inline_asm_to_bin(const char *input_file,
         unlink(output_file);
         rc = -1;
     }
+#endif
 
     unlink(asm_tmp);
     free_asm_lines(lines, line_count);

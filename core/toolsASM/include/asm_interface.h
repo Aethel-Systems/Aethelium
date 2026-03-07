@@ -1,4 +1,21 @@
 /*
+ * Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program. If not, see <https://www.gnu.org/licenses/>.
+ */
+
+/*
  * Assembly Orchestration Layer - C Interface Header
  * toolsASM/include/asm_interface.h
  *
@@ -14,6 +31,18 @@
 
 #include <stdint.h>
 #include <stddef.h>
+
+#if defined(_WIN64) && defined(__x86_64__)
+#define AETHEL_ASM_ABI __attribute__((sysv_abi))
+#else
+#define AETHEL_ASM_ABI
+#endif
+
+#if defined(_WIN64)
+#define AETHEL_WEAVER_ASM_NAME(sym) __asm__("_" #sym)
+#else
+#define AETHEL_WEAVER_ASM_NAME(sym)
+#endif
 
 #ifdef __cplusplus
 extern "C" {
@@ -43,7 +72,7 @@ extern "C" {
  * - rdx = initial value
  * - rax = result
  */
-extern uint32_t _calculate_crc32(
+extern AETHEL_ASM_ABI uint32_t _calculate_crc32(
     const uint8_t *data,
     uint64_t size,
     uint32_t initial
@@ -139,7 +168,7 @@ typedef struct {
  * Returns:
  *   0 on success, -1 on error
  */
-extern int weave_aki_structure(const AKI_Weave_Input *input);
+extern AETHEL_ASM_ABI int weave_aki_structure(const AKI_Weave_Input *input) AETHEL_WEAVER_ASM_NAME(weave_aki_structure);
 
 /**
  * Weave SRV [Full Structure] from raw component buffers
@@ -150,7 +179,7 @@ extern int weave_aki_structure(const AKI_Weave_Input *input);
  * Returns:
  *   0 on success, -1 on error
  */
-extern int weave_srv_structure(const SRV_Weave_Input *input);
+extern AETHEL_ASM_ABI int weave_srv_structure(const SRV_Weave_Input *input) AETHEL_WEAVER_ASM_NAME(weave_srv_structure);
 
 /**
  * Weave HDA [Full Structure] from raw component buffers
@@ -161,7 +190,7 @@ extern int weave_srv_structure(const SRV_Weave_Input *input);
  * Returns:
  *   0 on success, -1 on error
  */
-extern int weave_hda_structure(const HDA_Weave_Input *input);
+extern AETHEL_ASM_ABI int weave_hda_structure(const HDA_Weave_Input *input) AETHEL_WEAVER_ASM_NAME(weave_hda_structure);
 
 /**
  * Weave AETB [Full Structure] from raw component buffers
@@ -172,7 +201,7 @@ extern int weave_hda_structure(const HDA_Weave_Input *input);
  * Returns:
  *   0 on success, -1 on error
  */
-extern int weave_aetb_structure(const AETB_Weave_Input *input);
+extern AETHEL_ASM_ABI int weave_aetb_structure(const AETB_Weave_Input *input) AETHEL_WEAVER_ASM_NAME(weave_aetb_structure);
 
 /* ============================================================================
    Binary Format Emitters - File Output Functions (Legacy for compatibility)
@@ -203,7 +232,7 @@ extern int weave_aetb_structure(const AETB_Weave_Input *input);
  *
  * Note: File is created with permissions 0644 (rw-r--r--)
  */
-extern int _write_aki_binary(
+extern AETHEL_ASM_ABI int _write_aki_binary(
     const char *filename,
     const uint8_t *image,
     uint64_t size,
@@ -224,7 +253,7 @@ extern int _write_aki_binary(
  * Returns:
  *   0 on success, -1 on error
  */
-extern int _write_srv_binary(
+extern AETHEL_ASM_ABI int _write_srv_binary(
     const char *filename,
     const uint8_t *image,
     uint64_t size
@@ -245,7 +274,7 @@ extern int _write_srv_binary(
  * Returns:
  *   0 on success, -1 on error
  */
-extern int _write_hda_binary(
+extern AETHEL_ASM_ABI int _write_hda_binary(
     const char *filename,
     const uint8_t *image,
     uint64_t size
@@ -265,7 +294,7 @@ extern int _write_hda_binary(
  * Returns:
  *   0 on success, -1 on error
  */
-extern int _write_aetb_binary(
+extern AETHEL_ASM_ABI int _write_aetb_binary(
     const char *filename,
     const uint8_t *image,
     uint64_t size
@@ -305,4 +334,3 @@ extern int _write_aetb_binary(
 #endif
 
 #endif /* _ASM_INTERFACE_H_ */
-
