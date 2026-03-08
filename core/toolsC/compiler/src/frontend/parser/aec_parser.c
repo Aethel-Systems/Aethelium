@@ -245,6 +245,45 @@ static char *parse_import_module_spec(Parser *parser) {
     return safe_strdup(buffer);
 }
 
+/* Parse hierarchical identifier: IDENT ( '/' IDENT )* */
+static char *parse_slash_identifier(Parser *parser) {
+    char buffer[1024];
+    size_t len = 0;
+
+    if (!check(parser, TK_IDENT) && !check(parser, TK_PTR) &&
+        !check(parser, TK_VIEW) && !check(parser, TK_REG) &&
+        !check(parser, TK_METAL) && !check(parser, TK_ASM) &&
+        !check(parser, TK_BYTES)) {
+        return NULL;
+    }
+
+    buffer[0] = '\0';
+    while (1) {
+        Token t = current_token(parser);
+        size_t tlen = strlen(t.lexeme);
+        if (len + tlen + 2 >= sizeof(buffer)) return NULL;
+        memcpy(buffer + len, t.lexeme, tlen);
+        len += tlen;
+        buffer[len] = '\0';
+        advance(parser);
+
+        if (!check(parser, TK_SLASH)) break;
+        advance(parser);
+        if (!check(parser, TK_IDENT) && !check(parser, TK_PTR) &&
+            !check(parser, TK_VIEW) && !check(parser, TK_REG) &&
+            !check(parser, TK_METAL) && !check(parser, TK_ASM) &&
+            !check(parser, TK_BYTES)) {
+            error(parser, "Expected identifier segment after '/'");
+            return NULL;
+        }
+        if (len + 2 >= sizeof(buffer)) return NULL;
+        buffer[len++] = '/';
+        buffer[len] = '\0';
+    }
+
+    return safe_strdup(buffer);
+}
+
 /* =====================================================================
  * 前向声明
  * ===================================================================== */
@@ -1629,13 +1668,18 @@ static ASTNode* parse_primary(Parser *parser) {
     
     /* 标识符或关键字作为标识符 (ptr/view/reg 等可用作变量名或泛型前缀) */
     if (tok.type == TK_IDENT || tok.type == TK_PTR || tok.type == TK_VIEW || tok.type == TK_REG) {
+        char *full_name = parse_slash_identifier(parser);
+        if (!full_name) {
+            error(parser, "Expected identifier");
+            return NULL;
+        }
         ASTNode *node = ast_create_node(AST_IDENT);
-        node->data.ident.name = (char *)parser_intern_string(parser, tok.lexeme);
-        advance(parser);
+        node->data.ident.name = (char *)parser_intern_string(parser, full_name);
+        free(full_name);
         
         if (parser->debug) {
         fprintf(stderr, "[DEBUG] parse_primary: Parsed identifier '%s' at line %d, pos=%d\n",
-                tok.lexeme, tok.line, parser->pos);
+                node->data.ident.name, tok.line, parser->pos);
         }
         /* 注：不在这里处理泛型参数 <Type>
            let parse_postfix 处理 cast<Type>(expr) 形式
@@ -4215,11 +4259,15 @@ static ASTNode* parse_statement(Parser *parser) {
             return NULL;
         }
         
-        Token name = current_token(parser);
-        advance(parser);
+        char *var_name = parse_slash_identifier(parser);
+        if (!var_name) {
+            error(parser, "Expected variable name");
+            return NULL;
+        }
         
         ASTNode *var = ast_create_node(AST_VAR_DECL);
-        var->data.var_decl.name = (char *)parser_intern_string(parser, name.lexeme);
+        var->data.var_decl.name = (char *)parser_intern_string(parser, var_name);
+        free(var_name);
         var->data.var_decl.type = NULL;
         var->data.var_decl.init = NULL;
         
@@ -5235,13 +5283,20 @@ ASTNode* parser_parse_program(Parser *parser) {
                 continue;
             }
             
-            Token const_name = current_token(parser);
-            advance(parser);
+            char *const_name = parse_slash_identifier(parser);
+            if (!const_name) {
+                error(parser, "Expected identifier after const");
+                while (match(parser, TK_NEWLINE));
+                continue;
+            }
             
             ASTNode *const_decl = ast_create_node(AST_VAR_DECL);
-            const_decl->data.var_decl.name = (char *)parser_intern_string(parser, const_name.lexeme);
+            const_decl->data.var_decl.name = (char *)parser_intern_string(parser, const_name);
+            free(const_name);
             const_decl->data.var_decl.is_const = 1;
             const_decl->data.var_decl.is_mutable = 0;
+            const_decl->data.var_decl.init = NULL;
+            const_decl->data.var_decl.init_value = NULL;
             
             /* 类型注解 */
             if (match(parser, TK_COLON)) {
@@ -5252,7 +5307,8 @@ ASTNode* parser_parse_program(Parser *parser) {
             /* 初始化值 */
             if (match(parser, TK_ASSIGN)) {
                 while (match(parser, TK_NEWLINE));
-                const_decl->data.var_decl.init_value = parse_expression(parser);
+                const_decl->data.var_decl.init = parse_expression(parser);
+                const_decl->data.var_decl.init_value = const_decl->data.var_decl.init;
             }
             
             while (match(parser, TK_NEWLINE) || match(parser, TK_SEMICOLON));
@@ -5282,11 +5338,15 @@ ASTNode* parser_parse_program(Parser *parser) {
                 error(parser, "Expected function name");
                 break;
             }
-            Token name = current_token(parser);
-            advance(parser);
+            char *func_name = parse_slash_identifier(parser);
+            if (!func_name) {
+                error(parser, "Expected function name");
+                break;
+            }
             
             ASTNode *func = ast_create_node(AST_FUNC_DECL);
-            func->data.func_decl.name = (char *)parser_intern_string(parser, name.lexeme);
+            func->data.func_decl.name = (char *)parser_intern_string(parser, func_name);
+            free(func_name);
             func->data.func_decl.is_extern = is_extern;
             /* [TODO-06] 保存装饰器信息 */
             func->data.func_decl.attributes = attributes;
@@ -5316,11 +5376,15 @@ ASTNode* parser_parse_program(Parser *parser) {
                         continue;
                     }
 
-                    Token param_name = current_token(parser);
-                    advance(parser);
-
+                    char *param_name = parse_slash_identifier(parser);
+                    if (!param_name) {
+                        error(parser, "Expected parameter name");
+                        break;
+                    }
+                    
                     ASTNode *param = ast_create_node(AST_VAR_DECL);
-                    param->data.var_decl.name = (char *)parser_intern_string(parser, param_name.lexeme);
+                    param->data.var_decl.name = (char *)parser_intern_string(parser, param_name);
+                    free(param_name);
                     param->data.var_decl.type = NULL;
                     param->data.var_decl.init = NULL;
                     param->data.var_decl.init_value = NULL;
@@ -5467,11 +5531,42 @@ ASTNode* parser_parse_program(Parser *parser) {
                         break;
                     }
                     
-                    Token field_name = current_token(parser);
-                    advance(parser);
+                    /* 字段名允许使用关键字（如 protocol/default），保持原有宽松语义 */
+                    char field_name_buf[512];
+                    field_name_buf[0] = '\0';
+                    {
+                        Token field_name_tok = current_token(parser);
+                        size_t flen = strlen(field_name_tok.lexeme);
+                        if (flen + 1 >= sizeof(field_name_buf)) {
+                            error(parser, "Field name too long");
+                            break;
+                        }
+                        memcpy(field_name_buf, field_name_tok.lexeme, flen);
+                        field_name_buf[flen] = '\0';
+                        advance(parser);
+                    }
+                    while (check(parser, TK_SLASH)) {
+                        advance(parser);
+                        if (!check(parser, TK_IDENT) && !check(parser, TK_PTR) &&
+                            !check(parser, TK_VIEW) && !check(parser, TK_REG) &&
+                            !check(parser, TK_METAL) && !check(parser, TK_ASM) &&
+                            !check(parser, TK_BYTES)) {
+                            error(parser, "Expected field name segment after '/'");
+                            break;
+                        }
+                        if (strlen(field_name_buf) + strlen(current_token(parser).lexeme) + 2 >= sizeof(field_name_buf)) {
+                            error(parser, "Field name too long");
+                            break;
+                        }
+                        strcat(field_name_buf, "/");
+                        strcat(field_name_buf, current_token(parser).lexeme);
+                        advance(parser);
+                    }
+                    char *field_name = safe_strdup(field_name_buf);
                     
                     if (!match(parser, TK_COLON)) {
                         error(parser, "Expected ':' after field name");
+                        free(field_name);
                         break;
                     }
                     
@@ -5512,7 +5607,7 @@ ASTNode* parser_parse_program(Parser *parser) {
                         capacity = new_capacity;
                     }
                     struct_decl->data.struct_decl.field_names[struct_decl->data.struct_decl.field_count] =
-                        safe_strdup(field_name.lexeme);
+                        field_name;
                     struct_decl->data.struct_decl.field_types[struct_decl->data.struct_decl.field_count] =
                         field_type;
                     struct_decl->data.struct_decl.field_count++;

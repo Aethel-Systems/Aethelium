@@ -293,6 +293,19 @@ static void gen_expression(CodeGenerator *gen, ASTNode *expr) {
     }
         
     case AST_CALL:
+        /* cast<Type>(expr) / ptr<Type>(expr) are compile-time reinterpret casts, not runtime calls. */
+        if (expr->data.call.func && expr->data.call.func->type == AST_IDENT &&
+            expr->data.call.func->data.ident.name) {
+            const char *callee = expr->data.call.func->data.ident.name;
+            if (strcmp(callee, "cast") == 0 || strcmp(callee, "ptr") == 0 ||
+                strncmp(callee, "cast<", 5) == 0 || strncmp(callee, "ptr<", 4) == 0) {
+                if (expr->data.call.arg_count > 0 && expr->data.call.args && expr->data.call.args[0]) {
+                    gen_expression(gen, expr->data.call.args[0]);
+                }
+                break;
+            }
+        }
+
         /* 检测内置print()函数 */
         if (is_print_function_call(expr)) {
             PrintCompileContext ctx = {
@@ -1254,8 +1267,10 @@ typedef struct {
     int pending_cs_valid;
     uint16_t pending_cs_selector;
     int32_t stack_allocated;
+    int32_t planned_local_bytes;
     int target_format;
     int current_func_is_efi;
+    int32_t uefi_system_table_offset;
 } McCtx;
 
 static int mc_emit_mov_acc_arg(McCtx *ctx, int arg_idx);
@@ -1264,6 +1279,7 @@ static int mc_emit_load_acc_from_stack(McCtx *ctx, int32_t stack_offset);
 static int mc_emit_expr(McCtx *ctx, ASTNode *expr);
 static int mc_emit_mov_acc_imm(McCtx *ctx, int64_t v);
 static uint32_t mc_array_elem_size_from_type_name(const char *type_name, uint32_t fallback_size);
+static int mc_eval_const_expr(McCtx *ctx, ASTNode *expr, uint64_t *out);
 
 #define RELOC_PC32 2u
 
@@ -1331,6 +1347,31 @@ static int mc_patch_rel16(McBuf *b, size_t off, int16_t disp) {
     if (!b || off + 2 > b->size) return -1;
     b->data[off + 0] = (uint8_t)(disp & 0xFF);
     b->data[off + 1] = (uint8_t)((disp >> 8) & 0xFF);
+    return 0;
+}
+
+static int mc_patch_u16(McBuf *b, size_t off, uint16_t v) {
+    if (!b || off + 2 > b->size) return -1;
+    b->data[off + 0] = (uint8_t)(v & 0xFFu);
+    b->data[off + 1] = (uint8_t)((v >> 8) & 0xFFu);
+    return 0;
+}
+
+static int mc_patch_u32(McBuf *b, size_t off, uint32_t v) {
+    if (!b || off + 4 > b->size) return -1;
+    b->data[off + 0] = (uint8_t)(v & 0xFFu);
+    b->data[off + 1] = (uint8_t)((v >> 8) & 0xFFu);
+    b->data[off + 2] = (uint8_t)((v >> 16) & 0xFFu);
+    b->data[off + 3] = (uint8_t)((v >> 24) & 0xFFu);
+    return 0;
+}
+
+static int mc_patch_u64(McBuf *b, size_t off, uint64_t v) {
+    int i;
+    if (!b || off + 8 > b->size) return -1;
+    for (i = 0; i < 8; i++) {
+        b->data[off + (size_t)i] = (uint8_t)((v >> (i * 8)) & 0xFFu);
+    }
     return 0;
 }
 
@@ -1619,6 +1660,8 @@ static void mc_reset_locals(McCtx *ctx) {
     ctx->local_symbol_count = 0;
     ctx->local_symbol_cap = 0;
     ctx->stack_allocated = 0;
+    ctx->planned_local_bytes = 0;
+    ctx->uefi_system_table_offset = 0;
 }
 
 static McStructInfo *mc_find_struct(McCtx *ctx, const char *name) {
@@ -2249,6 +2292,65 @@ static int mc_emit_epilogue(McCtx *ctx) {
 static int mc_emit_expr(McCtx *ctx, ASTNode *expr);
 static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt);
 
+static int mc_is_reg_alias_type(ASTNode *type_node, ASTNode *init_node) {
+    const char *type_name = NULL;
+    if (type_node && type_node->type == AST_TYPE && type_node->data.type.name) {
+        type_name = type_node->data.type.name;
+    }
+    if (!type_name && init_node &&
+        init_node->type == AST_TYPECAST &&
+        init_node->data.typecast.target_type &&
+        init_node->data.typecast.target_type->type == AST_TYPE) {
+        type_name = init_node->data.typecast.target_type->data.type.name;
+    }
+    return (type_name && strncmp(type_name, "reg<", 4) == 0);
+}
+
+static int mc_plan_locals_in_stmt(McCtx *ctx, ASTNode *stmt) {
+    int i;
+    if (!ctx || !stmt) return 0;
+    switch (stmt->type) {
+        case AST_VAR_DECL: {
+            const char *name = stmt->data.var_decl.name;
+            McSymbol sym;
+            if (!name) return 0;
+            if (mc_is_reg_alias_type(stmt->data.var_decl.type, stmt->data.var_decl.init)) return 0;
+            if (mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, name)) return 0;
+            memset(&sym, 0, sizeof(sym));
+            sym.name = (char *)name;
+            sym.kind = MC_SYM_STACK;
+            ctx->stack_allocated += 8;
+            sym.stack_offset = -ctx->stack_allocated;
+            if (mc_add_local_symbol(ctx, &sym) != 0) return -1;
+            return 0;
+        }
+        case AST_BLOCK:
+            for (i = 0; i < stmt->data.block.stmt_count; i++) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.block.statements[i]) != 0) return -1;
+            }
+            return 0;
+        case AST_IF_STMT:
+            if (mc_plan_locals_in_stmt(ctx, stmt->data.if_stmt.then_branch) != 0) return -1;
+            if (stmt->data.if_stmt.else_branch &&
+                mc_plan_locals_in_stmt(ctx, stmt->data.if_stmt.else_branch) != 0) return -1;
+            return 0;
+        case AST_WHILE_STMT:
+            return mc_plan_locals_in_stmt(ctx, stmt->data.while_stmt.body);
+        case AST_HW_BLOCK:
+            for (i = 0; i < stmt->data.hw_block.stmt_count; i++) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.hw_block.statements[i]) != 0) return -1;
+            }
+            return 0;
+        case AST_HW_MORPH_BLOCK:
+            for (i = 0; i < stmt->data.hw_morph_block.stmt_count; i++) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.hw_morph_block.statements[i]) != 0) return -1;
+            }
+            return 0;
+        default:
+            return 0;
+    }
+}
+
 typedef enum {
     MC_PRINT_MODE_SYSCALL = 0,
     MC_PRINT_MODE_RAW = 1,
@@ -2273,8 +2375,11 @@ static int mc_ast_literal_is_string(const ASTNode *expr) {
 
 static McPrintMode mc_select_print_mode(const McCtx *ctx) {
     if (!ctx) return MC_PRINT_MODE_SYSCALL;
+    /* UEFI/PE targets must never emit syscall-based print stubs. */
+    if (ctx->target_format == 4 || ctx->target_format == 7) return MC_PRINT_MODE_UEFI;
     if (ctx->current_func_is_efi) return MC_PRINT_MODE_UEFI;
-    if (ctx->target_format == 5 || ctx->target_format == 6) return MC_PRINT_MODE_RAW;
+    /* RAW print is only for flat machine code BIN. */
+    if (ctx->target_format == 6) return MC_PRINT_MODE_RAW;
     return MC_PRINT_MODE_SYSCALL;
 }
 
@@ -2305,6 +2410,17 @@ static int mc_emit_strlen_rdi_to_rsi(McCtx *ctx) {
     return 0;
 }
 
+static int mc_emit_load_rsi_from_stack(McCtx *ctx, int32_t stack_offset) {
+    if (!ctx || !mc_is_x64(ctx) || stack_offset >= 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+    if (stack_offset >= -128) {
+        if (mc_emit_u8(&ctx->code, 0x75) != 0) return -1; /* mov rsi, [rbp+disp8] */
+        return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+    }
+    if (mc_emit_u8(&ctx->code, 0xB5) != 0) return -1; /* mov rsi, [rbp+disp32] */
+    return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
+}
+
 static int mc_emit_syscall_print_call(McCtx *ctx) {
     if (!ctx) return -1;
     if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov eax, SYS_PRINT */
@@ -2327,8 +2443,67 @@ static int mc_emit_raw_print_call(McCtx *ctx) {
     return 0;
 }
 
+static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, size_t len) {
+    size_t i;
+    if (!ctx || !buf) return -1;
+    if (ctx->machine_bits == 16) {
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, 0x3F8 */
+        if (mc_emit_u16(&ctx->code, 0x03F8u) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, 0xB800 */
+        if (mc_emit_u16(&ctx->code, 0xB800u) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es,ax */
+        if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1; /* xor di,di */
+    } else {
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, 0x3F8 */
+        if (mc_emit_u32(&ctx->code, 0x03F8u) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xBF) != 0) return -1; /* mov edi, 0xB8000 */
+        if (mc_emit_u32(&ctx->code, 0x000B8000u) != 0) return -1;
+    }
+    for (i = 0; i < len; i++) {
+        if (mc_emit_u8(&ctx->code, 0xE4) != 0 || mc_emit_u8(&ctx->code, 0xFD) != 0) return -1; /* in al,0x3FD */
+        if (mc_emit_u8(&ctx->code, 0xA8) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* test al,0x20 */
+        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0xFA) != 0) return -1; /* jz wait */
+        if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
+        if (mc_emit_u8(&ctx->code, buf[i]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
+        if (buf[i] == '\n') {
+            if (ctx->machine_bits == 16) {
+                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add di,160 */
+                if (mc_emit_u16(&ctx->code, 160u) != 0) return -1;
+            } else {
+                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add edi,160 */
+                if (mc_emit_u32(&ctx->code, 160u) != 0) return -1;
+            }
+            continue;
+        }
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, imm16 */
+            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0700u | (uint16_t)buf[i])) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x26) != 0) return -1; /* es: */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov [di],ax */
+            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add di,2 */
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, imm16 */
+            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0700u | (uint16_t)buf[i])) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov [edi/rdi],ax */
+            if (ctx->machine_bits == 64) {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+            }
+            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add edi/rdi,2 */
+        }
+    }
+    return 0;
+}
+
 static int mc_emit_uefi_print_call(McCtx *ctx) {
     if (!ctx) return -1;
+    if (ctx->current_func_is_efi && mc_is_x64(ctx)) {
+        /* efi/main ABI bridge spills params at [rbp-8],[rbp-16] in deterministic order.
+         * Force reload SystemTable* from [rbp-16] before every OutputString call. */
+        if (mc_emit_load_rsi_from_stack(ctx, -16) != 0) return -1;
+    } else if (ctx->uefi_system_table_offset < 0) {
+        if (mc_emit_load_rsi_from_stack(ctx, ctx->uefi_system_table_offset) != 0) return -1;
+    }
     /* input: rdx = UTF-16 string ptr, rsi = EFI_SYSTEM_TABLE* */
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x46) != 0 || mc_emit_u8(&ctx->code, 0x40) != 0) return -1; /* mov rax, [rsi+0x40] */
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; /* mov rcx, rax */
@@ -2365,6 +2540,9 @@ static int mc_emit_print_buffer(McCtx *ctx, McPrintMode mode, const uint8_t *buf
         if (mc_emit_embed_blob_and_lea_reg(ctx, buf, len, 2) != 0) return -1; /* rdx */
         return mc_emit_uefi_print_call(ctx);
     }
+    if (mode == MC_PRINT_MODE_RAW) {
+        return mc_emit_raw_print_bytes_immediate(ctx, buf, len);
+    }
     if (mc_emit_embed_blob_and_lea_reg(ctx, buf, len, 7) != 0) return -1; /* rdi */
     if (len > 0xFFFFFFFFu) return -1;
     if (mc_emit_mov_esi_imm32(ctx, (uint32_t)len) != 0) return -1;
@@ -2373,11 +2551,36 @@ static int mc_emit_print_buffer(McCtx *ctx, McPrintMode mode, const uint8_t *buf
 
 static int mc_emit_print_text(McCtx *ctx, McPrintMode mode, const char *text) {
     uint8_t *encoded = NULL;
+    char *normalized = NULL;
     size_t encoded_size = 0;
+    size_t i;
+    size_t lf_count = 0;
+    size_t out_pos = 0;
     int rc = -1;
     if (!ctx || !text) return -1;
     if (mode == MC_PRINT_MODE_UEFI) {
-        if (prepare_string_constant(text, 4, &encoded, &encoded_size) != 0) return -1;
+        for (i = 0; text[i] != '\0'; i++) {
+            if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r')) {
+                lf_count++;
+            }
+        }
+        if (lf_count > 0) {
+            size_t in_len = strlen(text);
+            normalized = (char *)malloc(in_len + lf_count + 1);
+            if (!normalized) return -1;
+            for (i = 0; text[i] != '\0'; i++) {
+                if (text[i] == '\n' && (i == 0 || text[i - 1] != '\r')) {
+                    normalized[out_pos++] = '\r';
+                }
+                normalized[out_pos++] = text[i];
+            }
+            normalized[out_pos] = '\0';
+        }
+        if (prepare_string_constant(normalized ? normalized : text, 4, &encoded, &encoded_size) != 0) {
+            free(normalized);
+            return -1;
+        }
+        free(normalized);
         rc = mc_emit_print_buffer(ctx, mode, encoded, encoded_size);
         free(encoded);
         return rc;
@@ -2388,6 +2591,9 @@ static int mc_emit_print_text(McCtx *ctx, McPrintMode mode, const char *text) {
 
 static int mc_emit_print_expr_runtime(McCtx *ctx, McPrintMode mode, ASTNode *expr) {
     if (!ctx || !expr) return -1;
+    if (mode == MC_PRINT_MODE_RAW && !mc_is_x64(ctx)) {
+        return -1; /* 16/32-bit RAW mode only supports compile-time text printing */
+    }
     if (mc_emit_expr(ctx, expr) != 0) return -1;
     if (mode == MC_PRINT_MODE_UEFI) {
         if (mc_emit_mov_rdx_rax(ctx) != 0) return -1;
@@ -2413,6 +2619,234 @@ static int mc_emit_print_arg(McCtx *ctx, McPrintMode mode, ASTNode *arg) {
         return mc_emit_print_text(ctx, mode, tmp);
     }
     return mc_emit_print_expr_runtime(ctx, mode, arg);
+}
+
+static int mc_emit_modejump32_auto(McCtx *ctx, uint32_t entry, uint32_t load_base) {
+    size_t seq_start;
+    size_t lgdt_disp_off;
+    size_t far_ptr_off;
+    size_t gdtr_base_off;
+    size_t pm32_off;
+    size_t gdtr_off;
+    size_t gdt_off;
+
+    if (!ctx || ctx->machine_bits != 16) return -1;
+    seq_start = ctx->code.size;
+
+    if (mc_emit_u8(&ctx->code, 0xFA) != 0) return -1; /* cli */
+
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0x16) != 0) return -1;
+    lgdt_disp_off = ctx->code.size;
+    if (mc_emit_u16(&ctx->code, 0) != 0) return -1; /* lgdt [disp16] */
+
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov eax, cr0 */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0) return -1; /* or eax, 1 */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x22) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov cr0, eax */
+
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xEA) != 0) return -1; /* jmp ptr16:32 */
+    far_ptr_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1; /* pm32 entry linear */
+    if (mc_emit_u16(&ctx->code, 0x0008) != 0) return -1; /* CS selector */
+
+    pm32_off = ctx->code.size - seq_start;
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0 || mc_emit_u16(&ctx->code, 0x0010) != 0) return -1; /* mov ax,0x10 */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xD8) != 0) return -1; /* mov ds,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* mov fs,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xE8) != 0) return -1; /* mov gs,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* mov ss,ax */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xBC) != 0 || mc_emit_u32(&ctx->code, 0x0009FC00u) != 0) return -1; /* mov esp,0x9FC00 */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0 || mc_emit_u32(&ctx->code, entry) != 0) return -1; /* mov eax,entry */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* jmp eax */
+
+    gdtr_off = ctx->code.size - seq_start;
+    if (mc_emit_u16(&ctx->code, (uint16_t)(3u * 8u - 1u)) != 0) return -1;
+    gdtr_base_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+
+    gdt_off = ctx->code.size - seq_start;
+    if (mc_emit_u64(&ctx->code, 0x0000000000000000ull) != 0) return -1;
+    if (mc_emit_u64(&ctx->code, 0x00CF9A000000FFFFull) != 0) return -1;
+    if (mc_emit_u64(&ctx->code, 0x00CF92000000FFFFull) != 0) return -1;
+
+    if (mc_patch_u16(&ctx->code, lgdt_disp_off, (uint16_t)(load_base + (uint32_t)gdtr_off)) != 0) return -1;
+    if (mc_patch_u32(&ctx->code, far_ptr_off, load_base + (uint32_t)pm32_off) != 0) return -1;
+    if (mc_patch_u32(&ctx->code, gdtr_base_off, load_base + (uint32_t)gdt_off) != 0) return -1;
+    return 0;
+}
+
+static int mc_emit_modejump64_auto(McCtx *ctx, uint64_t entry, uint32_t load_base) {
+    size_t seq_start;
+    size_t lgdt_disp_off;
+    size_t mov_cr3_imm_off;
+    size_t far_ptr_off;
+    size_t gdtr_base_off;
+    size_t lm_off;
+    size_t gdtr_off;
+    size_t gdt_off;
+    size_t pml4_off;
+    size_t pdpt_off;
+    size_t pd_off;
+    uint32_t linear;
+    uint32_t pad;
+    int i;
+
+    if (!ctx || ctx->machine_bits != 32) return -1;
+    seq_start = ctx->code.size;
+
+    if (mc_emit_u8(&ctx->code, 0xFA) != 0) return -1; /* cli */
+
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0x15) != 0) return -1;
+    lgdt_disp_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1; /* lgdt [disp32] */
+
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* mov eax,cr4 */
+    if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* or eax,0x20 */
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x22) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* mov cr4,eax */
+
+    if (mc_emit_u8(&ctx->code, 0xB9) != 0 || mc_emit_u32(&ctx->code, 0xC0000080u) != 0) return -1; /* ecx=EFER */
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x32) != 0) return -1; /* rdmsr */
+    if (mc_emit_u8(&ctx->code, 0x0D) != 0 || mc_emit_u32(&ctx->code, 0x00000100u) != 0) return -1; /* or eax,LME */
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x30) != 0) return -1; /* wrmsr */
+
+    if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1;
+    mov_cr3_imm_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1; /* pml4 base */
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x22) != 0 || mc_emit_u8(&ctx->code, 0xD8) != 0) return -1; /* mov cr3,eax */
+
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov eax,cr0 */
+    if (mc_emit_u8(&ctx->code, 0x0D) != 0 || mc_emit_u32(&ctx->code, 0x80000001u) != 0) return -1; /* or eax,PG|PE */
+    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x22) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov cr0,eax */
+
+    if (mc_emit_u8(&ctx->code, 0xEA) != 0) return -1; /* jmp ptr16:32 */
+    far_ptr_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1; /* lm64 entry linear */
+    if (mc_emit_u16(&ctx->code, 0x0008) != 0) return -1;
+
+    lm_off = ctx->code.size - seq_start;
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0 || mc_emit_u16(&ctx->code, 0x0010) != 0) return -1; /* mov ax,0x10 */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xD8) != 0) return -1; /* mov ds,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es,ax */
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* mov ss,ax */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0 || mc_emit_u64(&ctx->code, entry) != 0) return -1; /* mov rax,entry */
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* jmp rax */
+
+    gdtr_off = ctx->code.size - seq_start;
+    if (mc_emit_u16(&ctx->code, (uint16_t)(3u * 8u - 1u)) != 0) return -1;
+    gdtr_base_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+
+    gdt_off = ctx->code.size - seq_start;
+    if (mc_emit_u64(&ctx->code, 0x0000000000000000ull) != 0) return -1;
+    if (mc_emit_u64(&ctx->code, 0x00AF9A000000FFFFull) != 0) return -1; /* long-mode code */
+    if (mc_emit_u64(&ctx->code, 0x00CF92000000FFFFull) != 0) return -1; /* data */
+
+    linear = load_base + (uint32_t)(ctx->code.size - seq_start);
+    pad = (uint32_t)((4096u - (linear & 0xFFFu)) & 0xFFFu);
+    for (i = 0; i < (int)pad; i++) {
+        if (mc_emit_u8(&ctx->code, 0x00) != 0) return -1;
+    }
+
+    pml4_off = ctx->code.size - seq_start;
+    if (mc_emit_u64(&ctx->code, 0) != 0) return -1;
+    for (i = 0; i < 511; i++) {
+        if (mc_emit_u64(&ctx->code, 0) != 0) return -1;
+    }
+
+    pdpt_off = ctx->code.size - seq_start;
+    if (mc_emit_u64(&ctx->code, 0) != 0) return -1;
+    for (i = 0; i < 511; i++) {
+        if (mc_emit_u64(&ctx->code, 0) != 0) return -1;
+    }
+
+    pd_off = ctx->code.size - seq_start;
+    for (i = 0; i < 512; i++) {
+        uint64_t pde = 0;
+        if (i < 32) {
+            pde = ((uint64_t)i * 0x200000ull) | 0x83ull; /* map first 64 MiB, 2MiB pages */
+        }
+        if (mc_emit_u64(&ctx->code, pde) != 0) return -1;
+    }
+
+    if (mc_patch_u32(&ctx->code, lgdt_disp_off, load_base + (uint32_t)gdtr_off) != 0) return -1;
+    if (mc_patch_u32(&ctx->code, far_ptr_off, load_base + (uint32_t)lm_off) != 0) return -1;
+    if (mc_patch_u32(&ctx->code, gdtr_base_off, load_base + (uint32_t)gdt_off) != 0) return -1;
+    if (mc_patch_u32(&ctx->code, mov_cr3_imm_off, load_base + (uint32_t)pml4_off) != 0) return -1;
+    if (mc_patch_u64(&ctx->code, pml4_off, ((uint64_t)load_base + (uint64_t)pdpt_off) | 0x3ull) != 0) return -1;
+    if (mc_patch_u64(&ctx->code, pdpt_off, ((uint64_t)load_base + (uint64_t)pd_off) | 0x3ull) != 0) return -1;
+    return 0;
+}
+
+static int mc_emit_hw_isa_param_call(McCtx *ctx,
+                                     const char *op,
+                                     ASTNode **operands,
+                                     int operand_count) {
+    uint64_t imm = 0;
+    uint64_t imm2 = 0;
+    if (!ctx || !op) return -1;
+
+    if (strcmp(op, "intcall") == 0) {
+        if (operand_count != 1 || !operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (imm > 0xFFu) return -1;
+        if (mc_emit_u8(&ctx->code, 0xCD) != 0) return -1; /* int imm8 */
+        return mc_emit_u8(&ctx->code, (uint8_t)imm);
+    }
+
+    if (strcmp(op, "inport") == 0) {
+        if (operand_count != 1 || !operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE4) != 0) return -1; /* in al, imm8 */
+            return mc_emit_u8(&ctx->code, (uint8_t)imm);
+        }
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
+        if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+        return mc_emit_u8(&ctx->code, 0xEC);              /* in al, dx */
+    }
+
+    if (strcmp(op, "outport") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1; /* value -> acc (AL low8) */
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE6) != 0) return -1; /* out imm8, al */
+            return mc_emit_u8(&ctx->code, (uint8_t)imm);
+        }
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
+        if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+        return mc_emit_u8(&ctx->code, 0xEE);              /* out dx, al */
+    }
+
+    if (strcmp(op, "modejump32") == 0) {
+        if (operand_count != 1 && operand_count != 2) return -1;
+        if (!operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (operand_count == 2) {
+            if (!operands[1]) return -1;
+            if (mc_eval_const_expr(ctx, operands[1], &imm2) != 0) return -1;
+        } else {
+            imm2 = 0x7C00u;
+        }
+        if (imm > 0xFFFFFFFFull || imm2 > 0xFFFFFFFFull) return -1;
+        return mc_emit_modejump32_auto(ctx, (uint32_t)imm, (uint32_t)imm2);
+    }
+
+    if (strcmp(op, "modejump64") == 0) {
+        if (operand_count != 1 && operand_count != 2) return -1;
+        if (!operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (operand_count == 2) {
+            if (!operands[1]) return -1;
+            if (mc_eval_const_expr(ctx, operands[1], &imm2) != 0) return -1;
+        } else {
+            imm2 = 0x8000u;
+        }
+        if (imm2 > 0xFFFFFFFFull) return -1;
+        return mc_emit_modejump64_auto(ctx, imm, (uint32_t)imm2);
+    }
+
+    return -1;
 }
 
 static int mc_collect_print_args(ASTNode *call, McPrintArgs *out) {
@@ -2701,6 +3135,22 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                 }
             }
 
+            /* cast<Type>(expr) / ptr<Type>(expr) are parser-level cast forms, not real calls. */
+            if (expr->data.call.func &&
+                expr->data.call.func->type == AST_IDENT &&
+                expr->data.call.func->data.ident.name) {
+                const char *callee_name = expr->data.call.func->data.ident.name;
+                if (strcmp(callee_name, "cast") == 0 ||
+                    strcmp(callee_name, "ptr") == 0 ||
+                    strncmp(callee_name, "cast<", 5) == 0 ||
+                    strncmp(callee_name, "ptr<", 4) == 0) {
+                    if (expr->data.call.arg_count >= 1 && expr->data.call.args && expr->data.call.args[0]) {
+                        return mc_emit_expr(ctx, expr->data.call.args[0]);
+                    }
+                    return mc_emit_mov_acc_imm(ctx, 0);
+                }
+            }
+
             /* 内置 print(): Python 风格参数解析 + 按函数上下文分流为 UEFI/syscall/raw 机器码 */
             if (expr->data.call.func && expr->data.call.func->type == AST_IDENT &&
                 strcmp(expr->data.call.func->data.ident.name, "print") == 0) {
@@ -2763,6 +3213,14 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
             /* 硬件层 ISA 直通调用 - 作为表达式被处理 */
             if (!ctx->in_hardware_block) {
                 return -1;  /* ISA 调用仅在硬件块中允许 */
+            }
+
+            if (expr->data.hw_isa_call.isa_operation &&
+                mc_emit_hw_isa_param_call(ctx,
+                                          expr->data.hw_isa_call.isa_operation,
+                                          expr->data.hw_isa_call.operands,
+                                          expr->data.hw_isa_call.operand_count) == 0) {
+                return 0;
             }
 
             /* lgdt/lidt 需要内存操作数。约定：先将操作数地址计算到 RAX，再发射 [RAX] 形式。 */
@@ -3046,10 +3504,6 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
             /* 普通局部变量分配在栈上 */
             if (!mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, name)) {
                 ctx->stack_allocated += 8;
-                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, 8 */
-                if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1;
-                if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
-                if (mc_emit_u8(&ctx->code, 0x08) != 0) return -1;
                 sym.kind = MC_SYM_STACK;
                 sym.stack_offset = -ctx->stack_allocated;
                 if (mc_add_local_symbol(ctx, &sym) != 0) return -1;
@@ -3462,6 +3916,14 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
              */
             
             if (stmt->data.hw_isa_call.isa_operation &&
+                mc_emit_hw_isa_param_call(ctx,
+                                          stmt->data.hw_isa_call.isa_operation,
+                                          stmt->data.hw_isa_call.operands,
+                                          stmt->data.hw_isa_call.operand_count) == 0) {
+                return 0;
+            }
+
+            if (stmt->data.hw_isa_call.isa_operation &&
                 strcmp(stmt->data.hw_isa_call.isa_operation, "goto") == 0) {
                 if (stmt->data.hw_isa_call.operand_count < 1 ||
                     !stmt->data.hw_isa_call.operands ||
@@ -3798,6 +4260,38 @@ static int mc_seed_function_params(McCtx *ctx, ASTNode *decl) {
     return 0;
 }
 
+/* Materialize parameter values into stable stack slots at function entry.
+ * This avoids parameter aliasing bugs when hardware code later mutates
+ * argument registers (rcx/rdx/r8/r9 etc.). */
+static int mc_spill_function_params(McCtx *ctx) {
+    size_t i;
+    if (!ctx || !mc_is_x64(ctx)) return 0;
+    for (i = 0; i < ctx->local_symbol_count; i++) {
+        McSymbol *sym = &ctx->local_symbols[i];
+        if (!sym || sym->kind != MC_SYM_PARAM) continue;
+        if (sym->stack_offset >= 0) return -1;
+
+        if (mc_emit_mov_acc_arg(ctx, sym->param_index) != 0) return -1;
+        sym->kind = MC_SYM_STACK;
+        if (mc_emit_store_acc_to_stack(ctx, sym->stack_offset) != 0) return -1;
+    }
+    return 0;
+}
+
+/* Reserve stable stack slots for parameters before prologue emission.
+ * This keeps stack layout deterministic and avoids per-parameter sub rsp,8. */
+static int mc_plan_param_spills(McCtx *ctx) {
+    size_t i;
+    if (!ctx || !mc_is_x64(ctx)) return 0;
+    for (i = 0; i < ctx->local_symbol_count; i++) {
+        McSymbol *sym = &ctx->local_symbols[i];
+        if (!sym || sym->kind != MC_SYM_PARAM) continue;
+        ctx->stack_allocated += 8;
+        sym->stack_offset = -ctx->stack_allocated;
+    }
+    return 0;
+}
+
 static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
     const char *name;
     size_t start;
@@ -3816,9 +4310,6 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
     mc_reset_locals(ctx);
     ctx->pending_cs_valid = 0;
     ctx->pending_cs_selector = 0;
-    if (mc_seed_function_params(ctx, decl) != 0) return -1;
-    
-    /* 检查函数是否有 @gate 装饰器 */
     gate_type = get_gate_type(decl);
     ctx->current_func_is_efi = 0;
     if ((gate_type && strcmp(gate_type, "efi") == 0) ||
@@ -3826,6 +4317,17 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
         strcmp(name, "efi_main") == 0) {
         ctx->current_func_is_efi = 1;
     }
+    if (mc_seed_function_params(ctx, decl) != 0) return -1;
+    if (decl->data.func_decl.body && mc_plan_locals_in_stmt(ctx, decl->data.func_decl.body) != 0) return -1;
+    if (mc_plan_param_spills(ctx) != 0) return -1;
+    if (ctx->current_func_is_efi && mc_is_x64(ctx)) {
+        ctx->stack_allocated += 8;
+        ctx->uefi_system_table_offset = -ctx->stack_allocated;
+    }
+    if (mc_is_x64(ctx) && ((ctx->stack_allocated & 0xF) == 0)) {
+        ctx->stack_allocated += 8;
+    }
+    ctx->planned_local_bytes = ctx->stack_allocated;
     
     /* 根据 gate_type 决定是否生成标准的函数序言/后续 */
     needs_prologue_epilogue = 1;
@@ -3872,6 +4374,19 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
         if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;         /* REX.W */
         if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;         /* mov */
         if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;         /* rbp, rsp */
+        if (ctx->planned_local_bytes > 0) {
+            if (ctx->planned_local_bytes <= 127) {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm8 */
+                if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, (uint8_t)ctx->planned_local_bytes) != 0) return -1;
+            } else {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm32 */
+                if (mc_emit_u8(&ctx->code, 0x81) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                if (mc_emit_u32(&ctx->code, (uint32_t)ctx->planned_local_bytes) != 0) return -1;
+            }
+        }
     }
 
     /* UEFI entry uses Microsoft x64 ABI (rcx, rdx, r8, r9).
@@ -3883,6 +4398,13 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
         if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1; /* mov rsi, rdx */
         if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, r8 */
         if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC9) != 0) return -1; /* mov rcx, r9 */
+        if (ctx->uefi_system_table_offset < 0) {
+            if (mc_emit_store_reg_to_base_disp(ctx, 5, 6, ctx->uefi_system_table_offset) != 0) return -1; /* mov [rbp+off], rsi */
+        }
+    }
+
+    if (needs_prologue_epilogue) {
+        if (mc_spill_function_params(ctx) != 0) return -1;
     }
 
     /* 生成函数体 */
@@ -3962,13 +4484,45 @@ static uint32_t mc_find_or_add_extern_symbol(AETBGenerator *aetb, const char *na
 
 static int mc_resolve_calls(McCtx *ctx) {
     size_t i;
+    uint64_t cast_stub_off = UINT64_MAX;
     if (!ctx) return -1;
+
+    /* Legacy parser/codegen may leave cast<...>/ptr<...> as call targets.
+       Materialize an identity-cast stub and redirect these calls to it. */
+    for (i = 0; i < ctx->call_count; i++) {
+        const char *tn = ctx->calls[i].target_name;
+        if (!tn) continue;
+        if (strcmp(tn, "cast") == 0 || strcmp(tn, "ptr") == 0 ||
+            strncmp(tn, "cast<", 5) == 0 || strncmp(tn, "ptr<", 4) == 0) {
+            if (cast_stub_off == UINT64_MAX) {
+                cast_stub_off = (uint64_t)ctx->code.size;
+                /* mov rax, rdi; ret */
+                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0xF8) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0xC3) != 0) return -1;
+                if (mc_ctx_add_func(ctx, "__aethel_cast_identity", cast_stub_off, 4) != 0) return -1;
+            }
+            break;
+        }
+    }
+
     for (i = 0; i < ctx->call_count; i++) {
         uint64_t target_off = 0;
         size_t rel_off = ctx->calls[i].rel_off;
         int rel_width = ctx->calls[i].rel_width;
         int64_t addend = (int64_t)rel_width;
-        if (mc_ctx_find_func(ctx, ctx->calls[i].target_name, &target_off) == 0) {
+        const char *target_name = ctx->calls[i].target_name;
+        int is_cast_call = 0;
+
+        if (target_name &&
+            (strcmp(target_name, "cast") == 0 || strcmp(target_name, "ptr") == 0 ||
+             strncmp(target_name, "cast<", 5) == 0 || strncmp(target_name, "ptr<", 4) == 0)) {
+            is_cast_call = 1;
+            target_off = cast_stub_off;
+        }
+
+        if (is_cast_call || mc_ctx_find_func(ctx, target_name, &target_off) == 0) {
             int64_t disp = (int64_t)target_off - (int64_t)(rel_off + (size_t)rel_width);
             if (rel_width == 2) {
                 if (disp < INT16_MIN || disp > INT16_MAX) return -1;
@@ -3981,7 +4535,7 @@ static int mc_resolve_calls(McCtx *ctx) {
             if (rel_width == 2) {
                 return -1;
             }
-            uint32_t sym_idx = mc_find_or_add_extern_symbol(ctx->aetb, ctx->calls[i].target_name);
+            uint32_t sym_idx = mc_find_or_add_extern_symbol(ctx->aetb, target_name);
             /* call rel32 uses target - (P + 4); linker formula is S - P + A, so A = -4 */
             aetb_gen_add_relocation_ex(ctx->aetb, rel_off, sym_idx, RELOC_PC32, (int16_t)(-addend));
         }
@@ -4152,9 +4706,11 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         uint64_t const_value = 0;
+        ASTNode *const_init = NULL;
         if (!decl || decl->type != AST_VAR_DECL || !decl->data.var_decl.name) continue;
-        if (!decl->data.var_decl.init) continue;
-        if (mc_eval_const_expr(&mc, decl->data.var_decl.init, &const_value) == 0) {
+        const_init = decl->data.var_decl.init ? decl->data.var_decl.init : decl->data.var_decl.init_value;
+        if (!const_init) continue;
+        if (mc_eval_const_expr(&mc, const_init, &const_value) == 0) {
             if (mc_find_symbol(mc.const_symbols, mc.const_symbol_count, decl->data.var_decl.name) == NULL) {
                 if (mc_add_const_symbol(&mc, decl->data.var_decl.name, const_value) != 0) {
                     strcpy(gen->error, "Failed to register constant symbol");

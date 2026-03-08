@@ -509,6 +509,11 @@ int hw_generate_isa_opcode(const char *operation, uint8_t *opcode_bytes) {
         opcode_bytes[0] = 0xCC;
         return 1;
     }
+    if (strcmp(operation, "retf") == 0) {
+        /* RETF: CB */
+        opcode_bytes[0] = 0xCB;
+        return 1;
+    }
     
     /* 中断禁用/启用 */
     if (strcmp(operation, "cli") == 0) {
@@ -591,6 +596,13 @@ int hw_generate_isa_opcode(const char *operation, uint8_t *opcode_bytes) {
         opcode_bytes[1] = 0x90;
         return 2;
     }
+    if (strcmp(operation, "call") == 0) {
+        /* CALL RAX: FF D0
+         * 约定：调用目标地址预先放入 RAX。*/
+        opcode_bytes[0] = 0xFF;
+        opcode_bytes[1] = 0xD0;
+        return 2;
+    }
     
     /* 内存屏障 */
     if (strcmp(operation, "mfence") == 0) {
@@ -635,6 +647,64 @@ int hw_generate_isa_opcode(const char *operation, uint8_t *opcode_bytes) {
     if (strcmp(operation, "hlt") == 0) {
         opcode_bytes[0] = 0xF4;
         return 1;
+    }
+
+    /* BIOS/boot 常用指令（无参数形式） */
+    if (strcmp(operation, "xoraxax") == 0 || strcmp(operation, "xoreaxeax") == 0) {
+        opcode_bytes[0] = 0x31;
+        opcode_bytes[1] = 0xC0;
+        return 2;
+    }
+    if (strcmp(operation, "movdsax") == 0) {
+        opcode_bytes[0] = 0x8E;
+        opcode_bytes[1] = 0xD8;
+        return 2;
+    }
+    if (strcmp(operation, "movesax") == 0) {
+        opcode_bytes[0] = 0x8E;
+        opcode_bytes[1] = 0xC0;
+        return 2;
+    }
+    if (strcmp(operation, "movfsax") == 0) {
+        opcode_bytes[0] = 0x8E;
+        opcode_bytes[1] = 0xE0;
+        return 2;
+    }
+    if (strcmp(operation, "movgsax") == 0) {
+        opcode_bytes[0] = 0x8E;
+        opcode_bytes[1] = 0xE8;
+        return 2;
+    }
+    if (strcmp(operation, "movssax") == 0) {
+        opcode_bytes[0] = 0x8E;
+        opcode_bytes[1] = 0xD0;
+        return 2;
+    }
+    if (strcmp(operation, "pushad") == 0) {
+        opcode_bytes[0] = 0x60;
+        return 1;
+    }
+    if (strcmp(operation, "popad") == 0) {
+        opcode_bytes[0] = 0x61;
+        return 1;
+    }
+    if (strcmp(operation, "cld") == 0) {
+        opcode_bytes[0] = 0xFC;
+        return 1;
+    }
+    if (strcmp(operation, "std") == 0) {
+        opcode_bytes[0] = 0xFD;
+        return 1;
+    }
+    if (strcmp(operation, "rdtsc") == 0) {
+        opcode_bytes[0] = 0x0F;
+        opcode_bytes[1] = 0x31;
+        return 2;
+    }
+    if (strcmp(operation, "rdpmc") == 0) {
+        opcode_bytes[0] = 0x0F;
+        opcode_bytes[1] = 0x33;
+        return 2;
     }
     
     /* 未识别的操作 */

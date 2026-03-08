@@ -1,112 +1,112 @@
-# Aethelium
+# Aethelium: A Hardware-First, Runtime-Less Systems Language Toolchain
 
-> **面向硬件、无运行时、为现代底层系统编程而生的语言工具链。**
-> A Hardware-First, Runtime-Less Systems Language Toolchain.
+[中文](README_CN.md)
 
-**Aethelium** 是一个独立的、自洽的系统编程语言工具链。它摒弃了传统的“编译器-汇编器-链接器”繁琐流程，专注于为 **UEFI 环境** 和 **裸机 (Bare-metal)** 开发提供极致精简的构建方案。
+> **A hardware-first, runtime-less systems language toolchain built for modern low-level programming.**
 
-本仓库包含 Aethelium 的**自举核心 (Bootstrap Core)**，能够在宿主机（macOS/Linux）上直接生成目标架构的原生机器码或 UEFI PE 可执行文件，无需依赖标准对象文件（.obj/.o）或外部链接器。
+**Aethelium** is an independent, self-contained systems programming language toolchain. It bypasses the cumbersome traditional "compiler-assembler-linker" workflow, focusing on providing an ultra-streamlined build solution for **UEFI environments** and **bare-metal** development.
+
+This repository contains the **Bootstrap Core** of Aethelium. It is capable of generating native machine code or UEFI PE executables for target architectures directly on a host machine (macOS/Linux), without relying on standard object files (`.obj`/`.o`) or external linkers.
 
 ---
 
-## 🏗 核心架构
+## 🏗 Core Architecture
 
-Aethelium 采用独特的 **"Weaver-Filler" (编排-填充)** 双引擎架构，实现了从高级语义到硅片逻辑的直接映射：
+Aethelium utilizes a unique **"Weaver-Filler"** dual-engine architecture, achieving a direct mapping from high-level semantics to silicon logic:
 
-*   **Binary Weaver (二进制织机 - `toolsASM`)**:
-    负责底层二进制布局的物理编排。
-*   **Logic Filler (逻辑填充器 - `toolsC`)**:
-    C 语言实现的编译器前端。负责 Aethelium 语法的语义分析、AST 构建，并将生成的机器码逻辑精准填充至织机预设的内存槽位中。
+*   **Binary Weaver (`toolsASM`)**:
+    Responsible for the physical orchestration of the low-level binary layout.
+*   **Logic Filler (`toolsC`)**:
+    A compiler frontend implemented in C. It handles semantic analysis and AST construction for Aethelium syntax, precisely "filling" the generated machine code logic into the memory slots preset by the Weaver.
 
-### 目录结构说明
+### Directory Structure
 
 ```text
 Aethelium/
-├── Makefile                # 统一构建编排系统
-├── README.md               # 项目技术文档
-└── core/                   # 核心工具链源码
-    ├── toolsC/             # [Frontend] 编译器前端与逻辑填充层
-    │   ├── include/        #   - 核心头文件 (二进制格式规范、AEFS 协议)
-    │   ├── aetb/           #   - AETB 中间格式生成引擎
-    │   ├── compiler/       #   - 词法/语法分析与代码生成主逻辑
-    │   └── mkiso/aefs/     #   - 引导介质与文件系统支持
-    └── toolsASM/           # [Backend] 二进制织机与汇编发射层
-        ├── include/        #   - 汇编接口定义
-        └── src/            #   - 核心指令发射与布局实现 (NASM)
+├── Makefile                # Unified build orchestration system
+├── README.md               # Technical documentation
+└── core/                   # Core toolchain source code
+    ├── toolsC/             # [Frontend] Compiler frontend & logic filling layer
+    │   ├── include/        #   - Core headers (binary format specs, AEFS protocol)
+    │   ├── aetb/           #   - AETB intermediate format generation engine
+    │   ├── compiler/       #   - Main logic for lexical/syntax analysis & code gen
+    │   └── mkiso/aefs/     #   - Boot media and file system support
+    └── toolsASM/           # [Backend] Binary Weaver & assembly emission layer
+        ├── include/        #   - Assembly interface definitions
+        └── src/            #   - Core instruction emission & layout implementation (NASM)
 ```
 
 ---
 
-## 🛠 构建工作流
+## 🛠 Build Workflow
 
-### 环境依赖
+### Prerequisites
 
-构建 Aethelium 工具链需要以下标准环境：
+Building the Aethelium toolchain requires the following environment:
 
-| 组件 | 要求 | 说明 |
+| Component | Requirement | Description |
 | :--- | :--- | :--- |
-| **Compiler** | Clang / GCC | 支持 C11 标准，推荐 Clang |
-| **Assembler** | NASM 2.15+ | 用于处理后端二进制编排 |
-| **Build System** | GNU Make 4.0+ | 自动化构建管理 |
+| **Compiler** | Clang / GCC | C11 support required; Clang recommended |
+| **Assembler** | NASM 2.15+ | Used for backend binary orchestration |
+| **Build System** | GNU Make 4.0+ | Automated build management |
 
-*源码编译支持架构：Darwin (macOS) x86_64/arm64, 最终产物支持：macOSx86_64/arm64和windows x86_64*
+*Source compilation supports: Darwin (macOS) x86_64/arm64. Final output supports: macOS x86_64/arm64 and Windows x86_64.*
 
-### 编译命令
+### Build Commands
 
-在仓库根目录下执行：
+Execute the following in the repository root:
 
-1.  **环境检查**
+1.  **Environment Check**
     ```bash
     make check-platform
     ```
 
-2.  **构建核心编译器**
+2.  **Build Core Compiler**
     ```bash
     make all
     ```
-    *注：此命令将自动编译 `toolsC` 与 `toolsASM` ，并链接为最终的 `aethelc` 可执行文件。*
+    *Note: This command automatically compiles `toolsC` and `toolsASM`, linking them into the final `aethelc` executable.*
 
-3.  **产物验证**
-    构建成功后，编译器二进制文件将位于：
+3.  **Verification**
+    Once built, the compiler binary will be located at:
     ```text
     build/output/aethelc
     ```
 
-### 其他操作
+### Other Operations
 
 ```bash
-make clean          # 清理构建产生的中间文件
-make distclean      # 重置仓库至初始状态
-make status         # 查看当前构建产物信息
+make clean          # Remove intermediate build files
+make distclean      # Reset repository to initial state
+make status         # View current build artifact information
 ```
 
 ---
 
-## ⚡ 技术特性
+## ⚡ Technical Features
 
-*   **无运行时 (Runtime-less)**: Aethelium 不依赖 libc 或任何复杂的运行时环境，生成的二进制文件除了硬件指令外没有任何冗余。
-*   **直接 UEFI 发射**: 编译器内置 PE32+ 格式生成能力，一行命令即可生成 `.efi` 应用，无需 EDK II 等庞大框架。
-*   **声明式硬件控制**: 通过 `@gate` 和 `@packed` 等语义，在高级语言层面实现对内存对齐、调用约定和寄存器行为的精确控制。
-
----
-
-## 使用手册
-
-*    **Aethelium语言参考手册.md**: 语言快速参考
-*    **硬件层手册_机器码对照版_2026-03-06.md**: 硬件层对照表
-
-
-## ⚠️ 说明
-
-*   **目标产物**: 本工具链生成的二进制文件通常为 **Aethelium Native** 、**x86机器码** 格式或 **UEFI PE** 格式，无法直接在 Windows 或 Linux 宿主机上运行（除非在虚拟机或裸机环境中）。
-*   **交叉编译**: 本仓库提供的工具链本质上是运行在宿主机上的交叉编译器 (Cross-Compiler)。
+*   **Runtime-less**: Aethelium does not depend on `libc` or any complex runtime environment. Generated binaries contain zero redundancy beyond hardware instructions.
+*   **Direct UEFI Emission**: The compiler features built-in PE32+ format generation. A single command produces a `.efi` application without requiring massive frameworks like EDK II.
+*   **Declarative Hardware Control**: Use semantics like `@gate` and `@packed` to achieve precise control over memory alignment, calling conventions, and register behavior at the high-level language layer.
 
 ---
 
-## 📄 许可证 (License)
+## User Manuals
 
-本项目采用 **GNU General Public License v3.0 (GPLv3)** 开源协议。
+*   **Aethelium Language Reference Manual.md**: Quick language reference.
+*   **Hardware Layer Manual_Machine Code Cross-Reference_2026-03-06.md**: Hardware layer mapping tables.
+
+---
+
+## ⚠️ Notes
+
+*   **Target Output**: The binaries generated by this toolchain are typically in **Aethelium Native**, **x86 Machine Code**, or **UEFI PE** formats. They cannot be executed directly on a Windows or Linux host (unless within a VM or bare-metal environment).
+*   **Cross-Compilation**: The toolchain provided in this repository is essentially a cross-compiler running on a host machine.
+
+---
+
+## 📄 License
+
+This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
 
 **Copyright (C) 2024-2026 Aethel-Systems. All rights reserved.**
-
----
