@@ -2319,6 +2319,17 @@ static int mc_plan_locals_in_stmt(McCtx *ctx, ASTNode *stmt) {
             memset(&sym, 0, sizeof(sym));
             sym.name = (char *)name;
             sym.kind = MC_SYM_STACK;
+            if (stmt->data.var_decl.type &&
+                stmt->data.var_decl.type->type == AST_TYPE &&
+                stmt->data.var_decl.type->data.type.name) {
+                sym.type_name = stmt->data.var_decl.type->data.type.name;
+            } else if (stmt->data.var_decl.init &&
+                       stmt->data.var_decl.init->type == AST_TYPECAST &&
+                       stmt->data.var_decl.init->data.typecast.target_type &&
+                       stmt->data.var_decl.init->data.typecast.target_type->type == AST_TYPE &&
+                       stmt->data.var_decl.init->data.typecast.target_type->data.type.name) {
+                sym.type_name = stmt->data.var_decl.init->data.typecast.target_type->data.type.name;
+            }
             ctx->stack_allocated += 8;
             sym.stack_offset = -ctx->stack_allocated;
             if (mc_add_local_symbol(ctx, &sym) != 0) return -1;
@@ -2505,11 +2516,7 @@ static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, siz
 
 static int mc_emit_uefi_print_call(McCtx *ctx) {
     if (!ctx) return -1;
-    if (ctx->current_func_is_efi && mc_is_x64(ctx)) {
-        /* efi/main ABI bridge spills params at [rbp-8],[rbp-16] in deterministic order.
-         * Force reload SystemTable* from [rbp-16] before every OutputString call. */
-        if (mc_emit_load_rsi_from_stack(ctx, -16) != 0) return -1;
-    } else if (ctx->uefi_system_table_offset < 0) {
+    if (ctx->uefi_system_table_offset < 0) {
         if (mc_emit_load_rsi_from_stack(ctx, ctx->uefi_system_table_offset) != 0) return -1;
     }
     /* input: rdx = UTF-16 string ptr, rsi = EFI_SYSTEM_TABLE* */
@@ -4418,8 +4425,16 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
     if (decl->data.func_decl.body && mc_plan_locals_in_stmt(ctx, decl->data.func_decl.body) != 0) return -1;
     if (mc_plan_param_spills(ctx) != 0) return -1;
     if (ctx->current_func_is_efi && mc_is_x64(ctx)) {
-        ctx->stack_allocated += 8;
-        ctx->uefi_system_table_offset = -ctx->stack_allocated;
+        size_t i;
+        ctx->uefi_system_table_offset = 0;
+        for (i = 0; i < ctx->local_symbol_count; i++) {
+            McSymbol *sym = &ctx->local_symbols[i];
+            if (!sym || sym->kind != MC_SYM_PARAM) continue;
+            if (sym->param_index == 1) {
+                ctx->uefi_system_table_offset = sym->stack_offset;
+                break;
+            }
+        }
     }
     if (mc_is_x64(ctx) && ((ctx->stack_allocated & 0xF) == 0)) {
         ctx->stack_allocated += 8;
@@ -4495,9 +4510,6 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
         if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1; /* mov rsi, rdx */
         if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, r8 */
         if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC9) != 0) return -1; /* mov rcx, r9 */
-        if (ctx->uefi_system_table_offset < 0) {
-            if (mc_emit_store_reg_to_base_disp(ctx, 5, 6, ctx->uefi_system_table_offset) != 0) return -1; /* mov [rbp+off], rsi */
-        }
     }
 
     if (needs_prologue_epilogue) {

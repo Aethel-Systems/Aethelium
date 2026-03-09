@@ -90,6 +90,31 @@ make status         # 查看当前构建产物信息
 
 ---
 
+## 📺 运行演示
+
+![Aethelium 运行演示](assets/screenshot.png)
+*在 QEMU (OVMF) 中直接运行 Aethelium 编写的 UEFI 应用*
+
+### 语言特性预览
+```aethelium
+@entry
+@gate(type: \efi)
+func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64 {
+    // 层级命名空间: sys/cpu/id, efi/con_out...
+    print("Hello, AethelOS World!")
+
+    hardware {
+        loop {
+            hardware\isa\pause() // 直接调用底层指令
+        }
+    }
+    return 0 
+}
+```
+*更多示例放在examples目录下*
+
+---
+
 ## 使用手册
 
 *    **Aethelium语言参考手册.md**: 语言快速参考

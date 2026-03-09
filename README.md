@@ -91,6 +91,31 @@ make status         # View current build artifact information
 
 ---
 
+## 📺 Demo & Aesthetics
+
+![Aethelium UEFI Demo](assets/screenshot.png)
+*Aethelium running a "Hello World" UEFI app in QEMU (OVMF).*
+
+### The Aethelium Flavor
+```aethelium
+@entry
+@gate(type: \efi)
+func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64 {
+    // Navigable hierarchy: sys/cpu/id, efi/con_out...
+    print("Hello, AethelOS World!")
+
+    hardware {
+        loop {
+            hardware\isa\pause() // Direct ISA passthrough
+        }
+    }
+    return 0 
+}
+```
+*More examples are located in the examples directory.*
+
+---
+
 ## User Manuals
 
 *   **Aethelium Language Reference Manual.md**: Quick language reference.
