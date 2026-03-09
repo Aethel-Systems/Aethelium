@@ -348,3 +348,19 @@ Key bytes:
 
 ---
 *This document represents the current implementation state of the repository. Maintain auditability by ensuring new hardware capabilities are added to this machine code reference before merging.*
+
+## 19. New Port-Width ISA Calls (2026-03-09)
+
+Added parameterized hardware ISA calls for explicit I/O widths:
+
+| Hardware Call | Machine Code (Representative) | Notes |
+| :--- | :--- | :--- |
+| `hardware\isa\inport16(port)` | `66 E5 ib` / `66 ED` | Reads AX from port (zero-extended to accumulator). |
+| `hardware\isa\outport16(port, v)` | `66 E7 ib` / `66 EF` | Writes AX low 16-bit to port. |
+| `hardware\isa\inport32(port)` | `E5 ib` / `ED` | Reads EAX from port. |
+| `hardware\isa\outport32(port, v)` | `E7 ib` / `EF` | Writes EAX low 32-bit to port. |
+
+Implementation path:
+- `mc_emit_hw_isa_param_call(...)` in codegen now recognizes `inport16/outport16/inport32/outport32`.
+- For 16-bit machine mode, operand-size prefixes are emitted where needed to preserve explicit width semantics.
+

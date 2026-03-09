@@ -1,0 +1,337 @@
+const EFI/SUCCESS: UInt64 = 0
+const EFI/NOT/FOUND: UInt64 = 14
+const ST/OFFSET/BOOT/SERVICES: UInt64 = 0x60
+
+const SCRATCH/KEY: UInt64 = 0x7F000000
+const SCRATCH/KEY/EVENT/INDEX: UInt64 = 0x7F000100
+const SCRATCH/KEY/EVENT/LIST: UInt64 = 0x7F000108
+const SCRATCH/HANDLE/COUNT: UInt64 = 0x7F000200
+const SCRATCH/HANDLE/BUFFER/PTR: UInt64 = 0x7F000208
+const SCRATCH/BLOCKIO/PTR: UInt64 = 0x7F000210
+const SCRATCH/SECTOR: UInt64 = 0x7F001000
+
+@entry
+@gate(type: \efi)
+func efi/main(image/handle: ptr<Void>, sys/table/raw: ptr<Void>) : UInt64 {
+    return disktool/main(image/handle, sys/table/raw)
+}
+
+@packed
+struct EFI/GUID {
+    data1: UInt32
+    data2: UInt16
+    data3: UInt16
+    data4: [8]UInt8
+}
+
+struct EFI/BOOT/SERVICES {
+    hdr0: UInt64
+    hdr1: UInt64
+    hdr2: UInt64
+    raise/tpl: UInt64
+    restore/tpl: UInt64
+    allocate/pages: UInt64
+    free/pages: UInt64
+    get/memory/map: UInt64
+    allocate/pool: UInt64
+    free/pool: UInt64
+    create/event: UInt64
+    set/timer: UInt64
+    wait/for/event: UInt64
+    signal/event: UInt64
+    close/event: UInt64
+    check/event: UInt64
+    install/protocol/interface: UInt64
+    reinstall/protocol/interface: UInt64
+    uninstall/protocol/interface: UInt64
+    handle/protocol: UInt64
+    reserved: UInt64
+    register/protocol/notify: UInt64
+    locate/handle: UInt64
+    locate/path/node: UInt64
+    install/configuration/table: UInt64
+    image/load: UInt64
+    image/start: UInt64
+    exit: UInt64
+    image/unload: UInt64
+    exit/boot/services: UInt64
+    get/next/monotonic/count: UInt64
+    stall: UInt64
+    set/watchdog/timer: UInt64
+    connect/controller: UInt64
+    disconnect/controller: UInt64
+    open/protocol: UInt64
+    close/protocol: UInt64
+    open/protocol/information: UInt64
+    protocols/per/handle: UInt64
+    locate/handle/buffer: UInt64
+    locate/protocol: UInt64
+}
+
+struct EFI/SYSTEM/TABLE {
+    hdr0: UInt64
+    hdr1: UInt64
+    hdr2: UInt64
+    firmware/vendor: UInt64
+    firmware/revision: UInt32
+    pad0: UInt32
+    console/in/handle: UInt64
+    con/in: UInt64
+    console/out/handle: UInt64
+    con/out: UInt64
+    standard/error/handle: UInt64
+    std/err: UInt64
+    runtime/services: UInt64
+    boot/services: UInt64
+}
+
+struct EFI/SIMPLE/TEXT/INPUT {
+    reset: UInt64
+    read/key/stroke: UInt64
+    wait/for/key: UInt64
+}
+
+@packed
+struct EFI/INPUT/KEY {
+    scan/code: UInt16
+    unicode/char: UInt16
+}
+
+struct EFI/BLOCK/IO/PROTOCOL {
+    revision: UInt64
+    media: UInt64
+    reset: UInt64
+    read/blocks: UInt64
+    write/blocks: UInt64
+    flush/blocks: UInt64
+}
+
+hardware func msabi/call2(target: UInt64, a0: UInt64, a1: UInt64): UInt64 {
+    hardware {
+        var rax: reg<"rax", UInt64>
+        var rcx: reg<"rcx", UInt64>
+        var rdx: reg<"rdx", UInt64>
+        var rsp: reg<"rsp", UInt64>
+
+        let old/sp: UInt64 = rsp
+        let work/sp: UInt64 = old/sp - 40
+
+        rsp = work/sp
+        rcx = a0
+        rdx = a1
+        rax = target
+        hardware\isa\call()
+        rsp = old/sp
+
+        return rax
+    }
+}
+
+hardware func msabi/call3(target: UInt64, a0: UInt64, a1: UInt64, a2: UInt64): UInt64 {
+    hardware {
+        var rax: reg<"rax", UInt64>
+        var rcx: reg<"rcx", UInt64>
+        var rdx: reg<"rdx", UInt64>
+        var r8: reg<"r8", UInt64>
+        var rsp: reg<"rsp", UInt64>
+
+        let old/sp: UInt64 = rsp
+        let work/sp: UInt64 = old/sp - 40
+
+        rsp = work/sp
+        rcx = a0
+        rdx = a1
+        r8 = a2
+        rax = target
+        hardware\isa\call()
+        rsp = old/sp
+
+        return rax
+    }
+}
+
+hardware func msabi/call5(target: UInt64, a0: UInt64, a1: UInt64, a2: UInt64, a3: UInt64, a4: UInt64): UInt64 {
+    hardware {
+        var rax: reg<"rax", UInt64>
+        var rcx: reg<"rcx", UInt64>
+        var rdx: reg<"rdx", UInt64>
+        var r8: reg<"r8", UInt64>
+        var r9: reg<"r9", UInt64>
+        var rsp: reg<"rsp", UInt64>
+
+        let old/sp: UInt64 = rsp
+        let work/sp: UInt64 = old/sp - 56
+        let arg5/slot: ptr<UInt64> = cast<ptr<UInt64>>(work/sp + 32)
+
+        rsp = work/sp
+        arg5/slot[0] = a4
+        rcx = a0
+        rdx = a1
+        r8 = a2
+        r9 = a3
+        rax = target
+        hardware\isa\call()
+        rsp = old/sp
+
+        return rax
+    }
+}
+
+func blockio/guid/build(out: ptr<EFI/GUID>) {
+    out\data1 = 0x964E5B21
+    out\data2 = 0x6459
+    out\data3 = 0x11D2
+    out\data4[0] = 0x8E
+    out\data4[1] = 0x39
+    out\data4[2] = 0x00
+    out\data4[3] = 0xA0
+    out\data4[4] = 0xC9
+    out\data4[5] = 0x69
+    out\data4[6] = 0x72
+    out\data4[7] = 0x3B
+}
+
+func key/read(sys/table: ptr<EFI/SYSTEM/TABLE>): UInt64 {
+    loop {
+        hardware {
+            let kbd/status: UInt64 = hardware\isa\inport(0x64)
+            if (kbd/status & 0x01) == 0 {
+                hardware\isa\pause()
+                continue
+            }
+            let scan: UInt64 = hardware\isa\inport(0x60)
+            if scan == 0x10 {
+                return 113
+            }
+            if scan != 0x00 && scan != 0xE0 && (scan & 0x80) == 0 {
+                return 114
+            }
+        }
+    }
+    return 0
+}
+
+func blockio/first/find(sys/table: ptr<EFI/SYSTEM/TABLE>): UInt64 {
+    let sys/table/addr: UInt64 = cast<UInt64>(sys/table)
+    let bs/addr: UInt64 = cast<ptr<UInt64>>(sys/table/addr + ST/OFFSET/BOOT/SERVICES)[0]
+    let bs: ptr<EFI/BOOT/SERVICES> = cast<ptr<EFI/BOOT/SERVICES>>(bs/addr)
+    let guid: ptr<EFI/GUID> = cast<ptr<EFI/GUID>>(SCRATCH/KEY)
+    let handle/count: ptr<UInt64> = cast<ptr<UInt64>>(SCRATCH/HANDLE/COUNT)
+    let handle/buffer/ptr: ptr<UInt64> = cast<ptr<UInt64>>(SCRATCH/HANDLE/BUFFER/PTR)
+    let blockio/ptr: ptr<UInt64> = cast<ptr<UInt64>>(SCRATCH/BLOCKIO/PTR)
+
+    blockio/guid/build(guid)
+    handle/count[0] = 0
+    handle/buffer/ptr[0] = 0
+
+    let st0: UInt64 = msabi/call5(bs\locate/handle/buffer, 2, cast<UInt64>(guid), 0, cast<UInt64>(handle/count), cast<UInt64>(handle/buffer/ptr))
+    if st0 != EFI/SUCCESS {
+        return 0
+    }
+    if handle/count[0] == 0 {
+        return 0
+    }
+
+    blockio/ptr[0] = 0
+    let first/handle: UInt64 = cast<ptr<UInt64>>(handle/buffer/ptr[0])[0]
+    let st1: UInt64 = msabi/call3(bs\handle/protocol, first/handle, cast<UInt64>(guid), cast<UInt64>(blockio/ptr))
+    if st1 != EFI/SUCCESS {
+        return 0
+    }
+    return blockio/ptr[0]
+}
+
+func blockio/read/lba0(block/io: UInt64): Bool {
+    if block/io == 0 {
+        return false
+    }
+
+    let media: UInt64 = cast<ptr<EFI/BLOCK/IO/PROTOCOL>>(block/io)\media
+    if media == 0 {
+        return false
+    }
+
+    let media/id: UInt64 = cast<ptr<UInt32>>(media)[0] as UInt64
+    let read/fn: UInt64 = cast<ptr<EFI/BLOCK/IO/PROTOCOL>>(block/io)\read/blocks
+    if read/fn == 0 {
+        return false
+    }
+
+    let st: UInt64 = msabi/call5(read/fn, block/io, media/id, 0, 512, SCRATCH/SECTOR)
+    return st == EFI/SUCCESS
+}
+
+func ata/read/lba0(): Bool {
+    let sector/words: ptr<UInt16> = cast<ptr<UInt16>>(SCRATCH/SECTOR)
+    let i: ptr<UInt64> = cast<ptr<UInt64>>(SCRATCH/HANDLE/COUNT)
+    i[0] = 0
+
+    hardware {
+        hardware\isa\outport(0x1F6, 0xE0)
+        hardware\isa\outport(0x1F2, 0x01)
+        hardware\isa\outport(0x1F3, 0x00)
+        hardware\isa\outport(0x1F4, 0x00)
+        hardware\isa\outport(0x1F5, 0x00)
+        hardware\isa\outport(0x1F7, 0x20)
+    }
+
+    loop {
+        let st: UInt64 = 0
+        hardware {
+            st = hardware\isa\inport(0x1F7)
+        }
+        if (st & 0x01) != 0 {
+            return false
+        }
+        if (st & 0x80) != 0 {
+            continue
+        }
+        if (st & 0x08) == 0 {
+            continue
+        }
+        break
+    }
+
+    loop {
+        if i[0] >= 256 {
+            break
+        }
+        let w: UInt64 = 0
+        hardware {
+            w = hardware\isa\inport16(0x1F0)
+        }
+        sector/words[i[0]] = w as UInt16
+        i[0] = i[0] + 1
+    }
+    return true
+}
+
+func disktool/main(image/handle: ptr<Void>, sys/table/raw: ptr<Void>) : UInt64 {
+    let sys/table: ptr<EFI/SYSTEM/TABLE> = cast<ptr<EFI/SYSTEM/TABLE>>(sys/table/raw)
+
+    print("UEFI Disk Tool (Hardware Layer + BlockIO)")
+    print("Press one key: r=read LBA0, q=hold")
+    loop {
+        print("disktool> ", end: "")
+        let ch: UInt64 = key/read(sys/table)
+        print("")
+
+        if ch == 114 {
+            if ata/read/lba0() {
+                print("read LBA0: success")
+            } else {
+                print("read LBA0: failed")
+            }
+        } else if ch == 113 {
+            print("hold")
+            return EFI/SUCCESS
+        }
+    }
+
+    hardware {
+        loop {
+            hardware\isa\pause()
+        }
+    }
+    return EFI/SUCCESS
+}

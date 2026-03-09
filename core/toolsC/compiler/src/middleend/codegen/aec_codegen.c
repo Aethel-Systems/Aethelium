@@ -2447,6 +2447,12 @@ static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, siz
     size_t i;
     if (!ctx || !buf) return -1;
     if (ctx->machine_bits == 16) {
+        if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, 0x0003 */
+        if (mc_emit_u16(&ctx->code, 0x0003u) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
+        if (mc_emit_u8(&ctx->code, 0xB4) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov ah,0x05 (select active page) */
+        if (mc_emit_u8(&ctx->code, 0xB0) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1; /* mov al,0 */
+        if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
         if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, 0x3F8 */
         if (mc_emit_u16(&ctx->code, 0x03F8u) != 0) return -1;
         if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, 0xB800 */
@@ -2460,9 +2466,6 @@ static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, siz
         if (mc_emit_u32(&ctx->code, 0x000B8000u) != 0) return -1;
     }
     for (i = 0; i < len; i++) {
-        if (mc_emit_u8(&ctx->code, 0xE4) != 0 || mc_emit_u8(&ctx->code, 0xFD) != 0) return -1; /* in al,0x3FD */
-        if (mc_emit_u8(&ctx->code, 0xA8) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* test al,0x20 */
-        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0xFA) != 0) return -1; /* jz wait */
         if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
         if (mc_emit_u8(&ctx->code, buf[i]) != 0) return -1;
         if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
@@ -2482,6 +2485,11 @@ static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, siz
             if (mc_emit_u8(&ctx->code, 0x26) != 0) return -1; /* es: */
             if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov [di],ax */
             if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add di,2 */
+            /* BIOS teletype mirror for stable on-screen visibility in early real mode */
+            if (mc_emit_u8(&ctx->code, 0xB4) != 0 || mc_emit_u8(&ctx->code, 0x0E) != 0) return -1; /* mov ah,0x0E */
+            if (mc_emit_u8(&ctx->code, 0xB7) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1; /* mov bh,0 */
+            if (mc_emit_u8(&ctx->code, 0xB3) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov bl,7 */
+            if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
         } else {
             if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, imm16 */
             if (mc_emit_u16(&ctx->code, (uint16_t)(0x0700u | (uint16_t)buf[i])) != 0) return -1;
@@ -2816,6 +2824,95 @@ static int mc_emit_hw_isa_param_call(McCtx *ctx,
         if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
         if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
         return mc_emit_u8(&ctx->code, 0xEE);              /* out dx, al */
+    }
+
+    if (strcmp(op, "inport16") == 0) {
+        if (operand_count != 1 || !operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (ctx->machine_bits != 16) {
+            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* AX width */
+        }
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1; /* in ax/eax, imm8 */
+            if (mc_emit_u8(&ctx->code, (uint8_t)imm) != 0) return -1;
+        } else {
+            if (ctx->machine_bits == 16) {
+                if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
+                if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+            } else {
+                if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, imm32 */
+                if (mc_emit_u32(&ctx->code, (uint32_t)(imm & 0xFFFFu)) != 0) return -1;
+            }
+            if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1; /* in ax/eax, dx */
+        }
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB7) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* movzx ax,ax */
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB7) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* movzx eax,ax */
+        }
+        return 0;
+    }
+
+    if (strcmp(op, "outport16") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1; /* value in acc -> AX low16 */
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (ctx->machine_bits != 16) {
+            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* AX width */
+        }
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE7) != 0) return -1; /* out imm8, ax/eax */
+            return mc_emit_u8(&ctx->code, (uint8_t)imm);
+        }
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
+            if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, imm32 */
+            if (mc_emit_u32(&ctx->code, (uint32_t)(imm & 0xFFFFu)) != 0) return -1;
+        }
+        return mc_emit_u8(&ctx->code, 0xEF);              /* out dx, ax/eax */
+    }
+
+    if (strcmp(op, "inport32") == 0) {
+        if (operand_count != 1 || !operands || !operands[0]) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* EAX width in 16-bit mode */
+        }
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)imm);
+        }
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u32(&ctx->code, (uint32_t)(imm & 0xFFFFu)) != 0) return -1;
+        }
+        return mc_emit_u8(&ctx->code, 0xED);
+    }
+
+    if (strcmp(op, "outport32") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* EAX width */
+        }
+        if (imm <= 0xFFu) {
+            if (mc_emit_u8(&ctx->code, 0xE7) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)imm);
+        }
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u16(&ctx->code, (uint16_t)imm) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u32(&ctx->code, (uint32_t)(imm & 0xFFFFu)) != 0) return -1;
+        }
+        return mc_emit_u8(&ctx->code, 0xEF);
     }
 
     if (strcmp(op, "modejump32") == 0) {
