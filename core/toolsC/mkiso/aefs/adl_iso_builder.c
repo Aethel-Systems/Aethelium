@@ -2203,8 +2203,10 @@ int adl_iso_builder_append_aefs(
     
     /* 生成UUIDs */
     uint8_t disk_uuid[16];
+    uint8_t esp_uuid[16];
     uint8_t boot_uuid[16], payload_uuid[16];
     adl_generate_uuid(disk_uuid);
+    adl_generate_uuid(esp_uuid);
     adl_generate_uuid(boot_uuid);
     adl_generate_uuid(payload_uuid);
 
@@ -2218,7 +2220,15 @@ int adl_iso_builder_append_aefs(
             fclose(iso);
             return -1;
         }
+
+        if (adl_generate_partition_table(iso, esp_uuid, payload_uuid, iso_total_lba) != 0) {
+            fprintf(stderr, "ERROR: Failed to write ADL Partition Table\n");
+            fclose(iso);
+            return -1;
+        }
     }
+
+    fprintf(stderr, "[ADL] Wrote Partition Table at LBA %d\n", ADL_PARTITION_TABLE_LBA);
     
     fprintf(stderr, "\n[ADL STAGE 1] Writing AEFS Structures at LBA %d...\n", AEFS_POOL_START_LBA);
     
