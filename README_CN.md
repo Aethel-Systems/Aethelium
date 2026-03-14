@@ -125,6 +125,7 @@ func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64
 
 *   **目标产物**: 本工具链生成的二进制文件通常为 **Aethelium Native** 、**x86机器码** 格式或 **UEFI PE** 格式，无法直接在 Windows 或 Linux 宿主机上运行（除非在虚拟机或裸机环境中）。
 *   **交叉编译**: 本仓库提供的工具链本质上是运行在宿主机上的交叉编译器 (Cross-Compiler)。
+*   **拒绝POSIX**: Aethelium永远不会在宿主机上自举，Aethelium只会在将来出现无unix、无posix、去C化的新系统重写自己
 
 ---
 
