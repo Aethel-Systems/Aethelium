@@ -133,6 +133,7 @@ func kernel/init(boot/info: ptr<BootInfo>): Void {
     *   `@gate(type: \syscall)`: 自动处理 `sysretq`。
     *   `@gate(type: \efi)`: 遵循 Microsoft x64 ABI (用于 UEFI)。
     *   `@gate(type: \naked)`: 不生成序言和尾声。
+    *   `@gate(type: \rom)`: ROM固件入口，不自动生成序言/尾声。
 
 ---
 

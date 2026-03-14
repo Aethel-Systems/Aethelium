@@ -44,7 +44,7 @@
 /* 编译上下文标志 */
 typedef struct {
     int target_format;           /* FORMAT_PE, FORMAT_AETB, FORMAT_BIN 等 */
-    int machine_bits;            /* 32 或 64 */
+    int machine_bits;            /* 16/32/64 */
     const char *target_isa;      /* "x86-64", "x86", 等 */
     int use_uefi;                /* PE输出时为1 */
     int use_syscall;             /* AETB/AKI输出时为1 */
@@ -64,6 +64,11 @@ typedef enum {
  * 检测是否为print()函数调用
  */
 int is_print_function_call(ASTNode *call_expr);
+
+/**
+ * 检测是否为comp()函数调用（ROM串口输出）
+ */
+int is_comp_function_call(ASTNode *call_expr);
 
 /**
  * 推导print()参数的类型
@@ -87,6 +92,13 @@ PrintArgType infer_print_arg_type(ASTNode *arg_expr);
 int codegen_print_call(PrintCompileContext *ctx, ASTNode *call, CodeGenerator *gen);
 
 /**
+ * 生成comp()调用的机器码
+ * - ROM: 串口（COM1）输出
+ * - 其它目标：拒绝（编译期错误）
+ */
+int codegen_comp_call(PrintCompileContext *ctx, ASTNode *call, CodeGenerator *gen);
+
+/**
  * 生成UEFI格式的print()
  * - 流程：构造UTF-16字符串 → 调用EFI_SIMPLE_TEXT_OUTPUT_PROTOCOL.OutputString
  * - 编译期支持：将utf-8字符串编码为UTF-16
@@ -107,6 +119,18 @@ int codegen_print_syscall(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator 
  * - 用途：内核引导阶段、驱动调试
  */
 int codegen_print_raw_metal(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator *gen);
+
+/**
+ * 生成ROM实模式print()
+ * - 16位：BIOS INT 10h + VGA/COM
+ * - 32/64位：VGA/COM 直写
+ */
+int codegen_print_rom_real(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator *gen);
+
+/**
+ * 生成ROM comp()：只做串口输出（不做任何初始化）
+ */
+int codegen_comp_rom_serial(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator *gen);
 
 /**
  * 字符串字面量预处理

@@ -35,6 +35,7 @@
 #include "ax.h"
 #include "pe.h"
 #include "pe_industrial.h"
+#include "rom.h"
 
 /**
  * 编译器支持的输出格式枚举
@@ -48,7 +49,8 @@ typedef enum {
     FORMAT_LET,         /* Logical Embryo Transfer */
     FORMAT_BIN,         /* Flat machine code binary */
     FORMAT_EFI,         /* UEFI PE32+ 嵌入式AETB (Embedded AETB bootloader) */
-    FORMAT_PE           /* UEFI PE32+ 工业级应用 (Industrial Grade PE Application) */
+    FORMAT_PE,          /* UEFI PE32+ 工业级应用 (Industrial Grade PE Application) */
+    FORMAT_ROM          /* Full ROM firmware image (flashable) */
 } format_type_t;
 
 /**

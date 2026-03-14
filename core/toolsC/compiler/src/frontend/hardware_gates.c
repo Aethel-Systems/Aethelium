@@ -90,6 +90,16 @@ static const GateTypeProperties gate_properties[] = {
         1,  /* 包含错误码 */
         0,
         "iretq"
+    },
+    {
+        GATE_TYPE_ROM,
+        "rom",
+        0,  /* ROM入口不保存寄存器 */
+        0,  /* 无序言 */
+        0,  /* 无尾声 */
+        0,
+        0,
+        ""  /* 由用户控制返回 */
     }
 };
 
@@ -97,7 +107,7 @@ static const GateTypeProperties gate_properties[] = {
  * 获取门类型的属性
  */
 static const GateTypeProperties* hw_get_gate_properties(GateType gate_type) {
-    for (int i = 0; i < 5; i++) {
+    for (int i = 0; i < (int)(sizeof(gate_properties) / sizeof(gate_properties[0])); i++) {
         if (gate_properties[i].gate_type == gate_type) {
             return &gate_properties[i];
         }
@@ -396,6 +406,9 @@ int hw_validate_frame_gate_compatibility(TrapFrame *frame, GateType gate_type) {
         case GATE_TYPE_NAKED:
             /* 裸体函数不需要框架 */
             return 0;
+        case GATE_TYPE_ROM:
+            /* ROM入口不需要框架 */
+            return 0;
             
         default:
             return -3;
@@ -437,6 +450,11 @@ uint64_t hw_get_register_save_mask(GateType gate_type) {
             mask = 0;
             break;
             
+        case GATE_TYPE_ROM:
+            /* ROM入口：不自动保存任何寄存器 */
+            mask = 0;
+            break;
+            
         default:
             mask = 0;
     }
@@ -460,6 +478,11 @@ uint64_t hw_get_register_clobber_mask(GateType gate_type) {
             /* 调用者保存：RAX, RCX, RDX, R8, R9, R10, R11 */
             mask = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 8) |
                    (1 << 9) | (1 << 10) | (1 << 11);
+            break;
+            
+        case GATE_TYPE_ROM:
+            /* ROM入口：不定义调用者保存 */
+            mask = 0;
             break;
             
         default:

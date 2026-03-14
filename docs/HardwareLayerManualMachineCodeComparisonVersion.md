@@ -43,7 +43,7 @@ ndisasm -b 64 /tmp/hwTest.bin | rg "syscall|in al|pause|cli|sti|hlt|mfence|mov r
 
 1.  `hardware func ... { ... }`
 2.  `hardware { ... }`
-3.  `@gate(type: \interrupt|\syscall|\efi|\naked|\exception)`
+3.  `@gate(type: \interrupt|\syscall|\efi|\naked|\exception|\rom)`
 4.  `reg<"...", T>`: Physical register binding
 5.  `port<T>`: Port abstraction
 6.  `@volatile view<T>`: MMIO views
@@ -54,8 +54,16 @@ ndisasm -b 64 /tmp/hwTest.bin | rg "syscall|in al|pause|cli|sti|hlt|mfence|mov r
 11. `morph { ... goto ... }`: Morph (Context switch)
 12. `hardware\state\snapshot(into: ...)`: Context snapshot
 13. `vector/read` and `vector/write`: SIMD vector memory access
+14. `@gate(type: \rom)`: ROM firmware entry (no automatic prologue/epilogue)
 
 ---
+
+### 3.1 ROM Firmware Output (Flashable .rom)
+
+- Use `@gate(type: \rom)` on the firmware entry function and mark it with `@entry`.
+- Build with `aethelc firmware.ae -o firmware.rom --rom --side 16MB` (default size is 8MB).
+- ROM images are padded to the requested size with `0xFF` for flash compatibility.
+- Inline `asm { ... }` blocks are rejected for ROM builds; use hardware/primal layer instead.
 
 ## 4. ISA Pass-through & Machine Code Reference
 
@@ -363,4 +371,3 @@ Added parameterized hardware ISA calls for explicit I/O widths:
 Implementation path:
 - `mc_emit_hw_isa_param_call(...)` in codegen now recognizes `inport16/outport16/inport32/outport32`.
 - For 16-bit machine mode, operand-size prefixes are emitted where needed to preserve explicit width semantics.
-

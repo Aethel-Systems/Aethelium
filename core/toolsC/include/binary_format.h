@@ -79,6 +79,7 @@ typedef struct {
 #define HDA_MAGIC      0x21414448   /* "!HDA" in little-endian */
 #define AETB_MAGIC     0x42544541   /* "AETB" as uint32_t host read value */
 #define IYA_MAGIC      0x21415941   /* "!AYA" in little-endian */
+#define ROM_MAGIC      0x214D4F52   /* "!ROM" in little-endian */
 
 #define FORMAT_VERSION_V1 1
 

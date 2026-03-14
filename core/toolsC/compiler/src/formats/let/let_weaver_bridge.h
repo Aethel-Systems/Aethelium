@@ -23,7 +23,8 @@ enum {
     LET_WEAVE_TARGET_SRV = 2,
     LET_WEAVE_TARGET_HDA = 3,
     LET_WEAVE_TARGET_AETB = 4,
-    LET_WEAVE_TARGET_BIN = 5
+    LET_WEAVE_TARGET_BIN = 5,
+    LET_WEAVE_TARGET_ROM = 6
 };
 
 typedef struct {
@@ -31,6 +32,8 @@ typedef struct {
     int bin_with_map;
     int has_bin_entry_offset;
     unsigned long long bin_entry_offset;
+    unsigned long long rom_size_bytes;
+    unsigned char rom_fill_byte;
 } LetWeaveOptions;
 
 int let_weave_to_target(const char *let_file,

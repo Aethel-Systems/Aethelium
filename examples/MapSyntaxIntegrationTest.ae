@@ -14,71 +14,71 @@
 map ACPI/DescriptionTableHeader at 0xE0000 {
     "
     [ Signature:4      ] [ Length:u32        ] [ Revision:u8   ] [ Checksum:u8   ]
-    [ OEM_ID:6         ] [ OEM_Table_ID:8    ] [ OEM_Revision:u32 ]
-    [ Creator_ID:u32   ] [ Creator_Revision:u32 ]
+    [ OEM/ID:6         ] [ OEM/Table/ID:8    ] [ OEM/Revision:u32 ]
+    [ Creator/ID:u32   ] [ Creator/Revision:u32 ]
     "
 }
 
 /* BIOS 固件随机存储区（位于 0x00400-0x004FF） */
 map BIOS/DataArea at 0x00400 {
     "
-    [ COM_Ports:8      ] [ LPT_Ports:6       ] [ EBDA_Segment:u16  ] [ Equipment:u16 ]
-    [ Memory_Size:u16  ] [ Keyboard_State:u8 ] [ Alt_Keypad:u8     ]
-    [ Keyboard_Flags:u8 ] [ Alt_E0:u8         ] [ Alt_E1:u8         ]
-    [ Keyboard_Buf:32  ]
+    [ COM/Ports:8      ] [ LPT/Ports:6       ] [ EBDA/Segment:u16  ] [ Equipment:u16 ]
+    [ Memory/Size:u16  ] [ Keyboard/State:u8 ] [ Alt/Keypad:u8     ]
+    [ Keyboard/Flags:u8 ] [ Alt/E0:u8         ] [ Alt/E1:u8         ]
+    [ Keyboard/Buf:32  ]
     "
 }
 
 /* 中断描述符表条目 - 每个中断对应的处理器指令 */
-map CPU/IDT_Entry at 0x00000 {
+map CPU/IDT/Entry at 0x00000 {
     "
-    [ Offset_Low:u16   ] [ Selector:u16      ] [ IST:u8        ] [ Type_Attr:u8 ]
-    [ Offset_Mid:u16   ] [ Offset_High:u32   ] [ Reserved:u32  ]
+    [ Offset/Low:u16   ] [ Selector:u16      ] [ IST:u8        ] [ Type/Attr:u8 ]
+    [ Offset/Mid:u16   ] [ Offset/High:u32   ] [ Reserved:u32  ]
     "
 }
 
 /* 全局描述符表条目 - CPU 段描述符 */
-map CPU/GDT_Entry at 0x00000 {
+map CPU/GDT/Entry at 0x00000 {
     "
-    [ Limit_Low:u16    ] [ Base_Low:u24      ] [ Access:u8     ]
-    [ Limit_Attr:u8    ] [ Base_Mid:u8       ] [ Base_High:u32 ]
+    [ Limit/Low:u16    ] [ Base/Low:u24      ] [ Access:u8     ]
+    [ Limit/Attr:u8    ] [ Base/Mid:u8       ] [ Base/High:u32 ]
     "
 }
 
 /* UEFI 启动信息结构 */
-map UEFI/Boot_Information at 0xFFFE0000 {
+map UEFI/Boot/Information at 0xFFFE0000 {
     "
-    [ EFI_Signature:8  ] [ EFI_Revision:u32  ] [ Headersize:u32 ] [ CRC32:u32 ]
-    [ Reserved:u32     ] [ Entry_Point:u64   ] [ Image_Base:u64 ]
-    [ Image_Size:u64   ] [ Code_Entry:u64    ]
+    [ EFI/Signature:8  ] [ EFI/Revision:u32  ] [ Headersize:u32 ] [ CRC32:u32 ]
+    [ Reserved:u32     ] [ Entry/Point:u64   ] [ Image/Base:u64 ]
+    [ Image/Size:u64   ] [ Code/Entry:u64    ]
     "
 }
 
 /* 页表项 - x86-64 标准页表条目 */
 map Memory/PageTableEntry at 0x00000 {
     "
-    [ Present:1        ] [ Write:1           ] [ User:1         ] [ Write_Through:1 ]
-    [ Cache_Disable:1  ] [ Accessed:1        ] [ Dirty:1        ] [ Size_Or_PAT:1 ]
-    [ Global:1         ] [ Avail:3           ] [ Page_Addr:40   ] [ Reserved:11 ]
+    [ Present:1        ] [ Write:1           ] [ User:1         ] [ Write/Through:1 ]
+    [ Cache/Disable:1  ] [ Accessed:1        ] [ Dirty:1        ] [ Size/Or/PAT:1 ]
+    [ Global:1         ] [ Avail:3           ] [ Page/Addr:40   ] [ Reserved:11 ]
     "
 }
 
 /* PCI 配置空间 - PCI 设备的标准配置 */
 map PCI/ConfigSpace at 0x80000000 {
     "
-    [ Vendor_ID:u16    ] [ Device_ID:u16     ] [ Command:u16    ] [ Status:u16 ]
-    [ Revision:u8      ] [ Class_Code:3      ] [ Header_Type:u8 ]
-    [ BIST:u8          ] [ Base_Address:24   ]
+    [ Vendor/ID:u16    ] [ Device/ID:u16     ] [ Command:u16    ] [ Status:u16 ]
+    [ Revision:u8      ] [ Class/Code:3      ] [ Header/Type:u8 ]
+    [ BIST:u8          ] [ Base/Address:24   ]
     "
 }
 
 /* 中断控制器（APIC） */
 map CPU/LocalAPIC at 0xFEC00000 {
     "
-    [ Reserved_00:4    ] [ APIC_ID:u32       ] [ Reserved_04:4  ] [ Version:u32 ]
-    [ Reserved_08:4    ] [ TPR:u32           ] [ Reserved_0C:4  ] [ APR:u32 ]
-    [ Reserved_10:4    ] [ PPR:u32           ] [ Reserved_14:4  ] [ EOI:u32 ]
-    [ Reserved_18:4    ] [ Remote_Read:u32   ]
+    [ Reserved/00:4    ] [ APIC/ID:u32       ] [ Reserved/04:4  ] [ Version:u32 ]
+    [ Reserved/08:4    ] [ TPR:u32           ] [ Reserved/0C:4  ] [ APR:u32 ]
+    [ Reserved/10:4    ] [ PPR:u32           ] [ Reserved/14:4  ] [ EOI:u32 ]
+    [ Reserved/18:4    ] [ Remote/Read:u32   ]
     "
 }
 
@@ -89,11 +89,11 @@ map CPU/LocalAPIC at 0xFEC00000 {
 
 /* 调试支持宏 - 便捷的调试操作 */
 syntax DebugOps {
-    "dbg::trace"    => "call @_aethos_debug_trace"
-    "dbg::print"    => "call @_aethos_debug_print"
+    "dbg::trace"    => "call @/aethos/debug/trace"
+    "dbg::print"    => "call @/aethos/debug/print"
     "dbg::halt"     => "hlt"
     "dbg::break"    => "int 3"
-    "dbg::panic"    => "call @_aethos_panic"
+    "dbg::panic"    => "call @/aethos/panic"
 }
 
 /* CPU 低级指令简写 */
@@ -110,10 +110,10 @@ syntax CPUInstructions {
 
 /* 内存操作 - 高效的内存处理 */
 syntax MemoryOps {
-    "mem::clear"    => "call @_aethos_memclear"
-    "mem::copy"     => "call @_aethos_memcpy"
-    "mem::set"      => "call @_aethos_memset"
-    "mem::compare"  => "call @_aethos_memcmp"
+    "mem::clear"    => "call @/aethos/memclear"
+    "mem::copy"     => "call @/aethos/memcpy"
+    "mem::set"      => "call @/aethos/memset"
+    "mem::compare"  => "call @/aethos/memcmp"
 }
 
 /* I/O 端口操作 - 底层硬件交互 */
@@ -152,12 +152,12 @@ syntax PerformanceOps {
 
 /* 特殊寄存器访问 */
 syntax RegisterOps {
-    "reg::read_cr0"  => "mov rax, cr0"
-    "reg::read_cr2"  => "mov rax, cr2"
-    "reg::read_cr3"  => "mov rax, cr3"
-    "reg::read_cr4"  => "mov rax, cr4"
-    "reg::write_cr0" => "mov cr0, rax"
-    "reg::write_cr3" => "mov cr3, rax"
+    "reg::read/cr0"  => "mov rax, cr0"
+    "reg::read/cr2"  => "mov rax, cr2"
+    "reg::read/cr3"  => "mov rax, cr3"
+    "reg::read/cr4"  => "mov rax, cr4"
+    "reg::write/cr0" => "mov cr0, rax"
+    "reg::write/cr3" => "mov cr3, rax"
 }
 
 /* ===================================================================
@@ -165,7 +165,7 @@ syntax RegisterOps {
  * =================================================================== */
 
 /* 使用内存拓扑映射的 ACPI 初始化函数 */
-func acpi_init() {
+func acpi/init() {
     /* 这个函数会使用 ACPI/DescriptionTableHeader 的类型信息 */
     
     /* cpu::cli 会被 syntax CPUInstructions 映射到 cli 指令 */
@@ -177,7 +177,7 @@ func acpi_init() {
 }
 
 /* BIOS 数据区初始化 */
-func bios_init() {
+func bios/init() {
     /* 使用 BIOS/DataArea map 操作 BIOS 数据区 */
     
     /* I/O 操作示例 */
@@ -189,7 +189,7 @@ func bios_init() {
 }
 
 /* 虚拟内存设置 */
-func setup_virtual_memory() {
+func setup/virtual/memory() {
     /* 使用 CPU/PageTableEntry 和 Memory/PageTableEntry */
     
     vm::enable()

@@ -1,0 +1,192 @@
+// RomFirmwareMinimal.ae
+// ROM 固件最小示例（16 位实模式入口，pflash 复位向量可直接执行）
+
+Rimport AEhardware
+
+@entry
+@gate(type: \rom)
+hardware func rom/entry() {
+    // VGA text-mode init (compiler MUST NOT do device init for ROM targets).
+    hardware {
+        // MISC output
+        hardware\isa\outport(0x3C2, 0x67)
+
+        // Sequencer
+        // Reset sequencer while programming registers (prevents partially-latched state in ROM-firmware boot)
+        hardware\isa\outport(0x3C4, 0x00); hardware\isa\outport(0x3C5, 0x01)
+        hardware\isa\outport(0x3C4, 0x01); hardware\isa\outport(0x3C5, 0x00)
+        hardware\isa\outport(0x3C4, 0x02); hardware\isa\outport(0x3C5, 0x03)
+        hardware\isa\outport(0x3C4, 0x03); hardware\isa\outport(0x3C5, 0x00)
+        hardware\isa\outport(0x3C4, 0x04); hardware\isa\outport(0x3C5, 0x02)
+        hardware\isa\outport(0x3C4, 0x00); hardware\isa\outport(0x3C5, 0x03)
+
+        // Unlock CRTC registers (Bit 7 必须为 0 才能解锁 CR0-CR7)
+        hardware\isa\outport(0x3D4, 0x11); hardware\isa\outport(0x3D5, 0x0E)
+
+        // CRTC (mode 03-like timing)
+        hardware\isa\outport(0x3D4, 0x00); hardware\isa\outport(0x3D5, 0x5F)
+        hardware\isa\outport(0x3D4, 0x01); hardware\isa\outport(0x3D5, 0x4F)
+        hardware\isa\outport(0x3D4, 0x02); hardware\isa\outport(0x3D5, 0x50)
+        hardware\isa\outport(0x3D4, 0x03); hardware\isa\outport(0x3D5, 0x82)
+        hardware\isa\outport(0x3D4, 0x04); hardware\isa\outport(0x3D5, 0x55)
+        hardware\isa\outport(0x3D4, 0x05); hardware\isa\outport(0x3D5, 0x81)
+        hardware\isa\outport(0x3D4, 0x06); hardware\isa\outport(0x3D5, 0xBF)
+        hardware\isa\outport(0x3D4, 0x07); hardware\isa\outport(0x3D5, 0x1F)
+        hardware\isa\outport(0x3D4, 0x08); hardware\isa\outport(0x3D5, 0x00)
+        hardware\isa\outport(0x3D4, 0x09); hardware\isa\outport(0x3D5, 0x4F)
+        hardware\isa\outport(0x3D4, 0x0A); hardware\isa\outport(0x3D5, 0x0D)
+        hardware\isa\outport(0x3D4, 0x0B); hardware\isa\outport(0x3D5, 0x0E)
+        hardware\isa\outport(0x3D4, 0x0C); hardware\isa\outport(0x3D5, 0x00)
+        hardware\isa\outport(0x3D4, 0x0D); hardware\isa\outport(0x3D5, 0x00)
+        hardware\isa\outport(0x3D4, 0x0E); hardware\isa\outport(0x3D5, 0x00)
+        hardware\isa\outport(0x3D4, 0x0F); hardware\isa\outport(0x3D5, 0x50)
+        hardware\isa\outport(0x3D4, 0x10); hardware\isa\outport(0x3D5, 0x9C)
+        hardware\isa\outport(0x3D4, 0x11); hardware\isa\outport(0x3D5, 0x0E)
+        hardware\isa\outport(0x3D4, 0x12); hardware\isa\outport(0x3D5, 0x8F)
+        hardware\isa\outport(0x3D4, 0x13); hardware\isa\outport(0x3D5, 0x28)
+        hardware\isa\outport(0x3D4, 0x14); hardware\isa\outport(0x3D5, 0x1F)
+        hardware\isa\outport(0x3D4, 0x15); hardware\isa\outport(0x3D5, 0x96)
+        hardware\isa\outport(0x3D4, 0x16); hardware\isa\outport(0x3D5, 0xB9)
+        hardware\isa\outport(0x3D4, 0x17); hardware\isa\outport(0x3D5, 0xA3)
+        hardware\isa\outport(0x3D4, 0x18); hardware\isa\outport(0x3D5, 0xFF)
+
+        // Graphics Controller
+        hardware\isa\outport(0x3CE, 0x00); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x01); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x02); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x03); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x04); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x05); hardware\isa\outport(0x3CF, 0x10)
+        hardware\isa\outport(0x3CE, 0x06); hardware\isa\outport(0x3CF, 0x0E)
+        hardware\isa\outport(0x3CE, 0x07); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x08); hardware\isa\outport(0x3CF, 0xFF)
+
+        // Attribute Controller: reset flip-flop via 0x3DA before each write
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x00); hardware\isa\outport(0x3C0, 0x00)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x01); hardware\isa\outport(0x3C0, 0x01)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x02); hardware\isa\outport(0x3C0, 0x02)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x03); hardware\isa\outport(0x3C0, 0x03)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x04); hardware\isa\outport(0x3C0, 0x04)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x05); hardware\isa\outport(0x3C0, 0x05)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x06); hardware\isa\outport(0x3C0, 0x06)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x07); hardware\isa\outport(0x3C0, 0x07)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x08); hardware\isa\outport(0x3C0, 0x08)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x09); hardware\isa\outport(0x3C0, 0x09)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0A); hardware\isa\outport(0x3C0, 0x0A)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0B); hardware\isa\outport(0x3C0, 0x0B)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0C); hardware\isa\outport(0x3C0, 0x0C)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0D); hardware\isa\outport(0x3C0, 0x0D)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0E); hardware\isa\outport(0x3C0, 0x0E)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x0F); hardware\isa\outport(0x3C0, 0x0F)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x10); hardware\isa\outport(0x3C0, 0x0C)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x11); hardware\isa\outport(0x3C0, 0x00)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x12); hardware\isa\outport(0x3C0, 0x0F)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x13); hardware\isa\outport(0x3C0, 0x08)
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x14); hardware\isa\outport(0x3C0, 0x00)
+
+        // Enable display
+        hardware\isa\inport(0x3DA)
+        hardware\isa\outport(0x3C0, 0x20)
+
+        // DAC palette (6-bit per channel). Firmware must set at least basic EGA 16-color palette
+        // because in ROM-firmware boot there is no BIOS to initialize VGA palette/font state.
+        hardware\isa\outport(0x3C8, 0x00) // start from color 0
+
+        // 0: black
+        hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x00)
+        // 1: blue
+        hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x2A)
+        // 2: green
+        hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x00)
+        // 3: cyan
+        hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x2A)
+        // 4: red
+        hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x00)
+        // 5: magenta
+        hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x00); hardware\isa\outport(0x3C9, 0x2A)
+        // 6: brown
+        hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x00)
+        // 7: light gray
+        hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x2A); hardware\isa\outport(0x3C9, 0x2A)
+        // 8: dark gray
+        hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x15)
+        // 9: light blue
+        hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x3F)
+        // 10: light green
+        hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x15)
+        // 11: light cyan
+        hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x3F)
+        // 12: light red
+        hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x15)
+        // 13: light magenta
+        hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x15); hardware\isa\outport(0x3C9, 0x3F)
+        // 14: yellow
+        hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x15)
+        // 15: white
+        hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x3F); hardware\isa\outport(0x3C9, 0x3F)
+
+        // Switch VGA to font-write access (plane 2 @ A0000) and load demo glyphs.
+        // Sequencer: MapMask=plane2, MemMode=disable odd/even + chain4.
+        hardware\isa\outport(0x3C4, 0x02); hardware\isa\outport(0x3C5, 0x04)
+        hardware\isa\outport(0x3C4, 0x04); hardware\isa\outport(0x3C5, 0x06)
+        // Graphics controller: ReadMap=plane2, GraphicsMode=0, MemMap=A0000.
+        hardware\isa\outport(0x3CE, 0x04); hardware\isa\outport(0x3CF, 0x02)
+        hardware\isa\outport(0x3CE, 0x05); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x06); hardware\isa\outport(0x3CF, 0x04)
+    }
+
+    // Load only glyphs required by the demo string: "PRINT: VGA OK"
+    vga/font/write8x16(0x20, 0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00) // space
+    vga/font/write8x16(0x3A, 0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x00) // :
+    vga/font/write8x16(0x41, 0x18,0x24,0x42,0x7E,0x42,0x42,0x42,0x00) // A
+    vga/font/write8x16(0x47, 0x3C,0x42,0x40,0x4E,0x42,0x42,0x3C,0x00) // G
+    vga/font/write8x16(0x49, 0x7E,0x18,0x18,0x18,0x18,0x18,0x7E,0x00) // I
+    vga/font/write8x16(0x4B, 0x42,0x44,0x48,0x70,0x48,0x44,0x42,0x00) // K
+    vga/font/write8x16(0x4E, 0x42,0x62,0x52,0x4A,0x46,0x42,0x42,0x00) // N
+    vga/font/write8x16(0x4F, 0x3C,0x42,0x42,0x42,0x42,0x42,0x3C,0x00) // O
+    vga/font/write8x16(0x50, 0x7C,0x42,0x42,0x7C,0x40,0x40,0x40,0x00) // P
+    vga/font/write8x16(0x52, 0x7C,0x42,0x42,0x7C,0x48,0x44,0x42,0x00) // R
+    vga/font/write8x16(0x54, 0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00) // T
+    vga/font/write8x16(0x56, 0x42,0x42,0x42,0x42,0x42,0x24,0x18,0x00) // V
+
+    // Restore VGA text-mode access (planes 0+1, standard text GC registers).
+    hardware {
+        hardware\isa\outport(0x3C4, 0x02); hardware\isa\outport(0x3C5, 0x03)
+        hardware\isa\outport(0x3C4, 0x04); hardware\isa\outport(0x3C5, 0x02)
+        hardware\isa\outport(0x3CE, 0x04); hardware\isa\outport(0x3CF, 0x00)
+        hardware\isa\outport(0x3CE, 0x05); hardware\isa\outport(0x3CF, 0x10)
+        hardware\isa\outport(0x3CE, 0x06); hardware\isa\outport(0x3CF, 0x0E)
+    }
+
+    // comp(): ROM serial (COM1). print(): VGA text memory.
+    comp("COMP: SERIAL OK")
+    print("PRINT: VGA OK")
+
+    // 固件主循环：CPU 停机等待，保证不返回
+    loop {
+        hardware {
+            hardware\isa\hlt()
+        }
+    }
+}

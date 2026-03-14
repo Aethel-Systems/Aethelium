@@ -134,7 +134,8 @@ int aethel_header_validate(const AethelBinaryHeader *hdr) {
     /* 验证魔数 */
     if (hdr->magic != MAGIC_AKI && hdr->magic != MAGIC_HDA && 
         hdr->magic != MAGIC_SRV && hdr->magic != MAGIC_AETB &&
-        hdr->magic != MAGIC_IYA && hdr->magic != MAGIC_AX) {
+        hdr->magic != MAGIC_IYA && hdr->magic != MAGIC_AX &&
+        hdr->magic != MAGIC_ROM) {
         fprintf(stderr, "Error: Invalid magic number 0x%08x\n", hdr->magic);
         return -1;
     }

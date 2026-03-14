@@ -370,6 +370,10 @@ int hw_codegen_prologue(HardwareCodeGen *gen, GateType gate_type) {
             /* 裸体函数：无序言 */
             return 0;
             
+        case GATE_TYPE_ROM:
+            /* ROM入口：无序言 */
+            return 0;
+            
         case GATE_TYPE_INTERRUPT:
             /* 中断门：由CPU自动压栈，无需额外序言 */
             return 0;
@@ -402,6 +406,10 @@ int hw_codegen_epilogue(HardwareCodeGen *gen, GateType gate_type) {
     switch (gate_type) {
         case GATE_TYPE_NAKED:
             /* 裸体函数：无尾声 */
+            return 0;
+            
+        case GATE_TYPE_ROM:
+            /* ROM入口：无尾声 */
             return 0;
             
         case GATE_TYPE_INTERRUPT:

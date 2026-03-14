@@ -131,9 +131,10 @@ void aki_header_set_aethela_engine(AethelBinaryHeader *hdr, uint64_t entry);
  * @return                成功返回0，失败返回非0
  */
 int aki_generate_image(const char *output_file, 
-                      const uint8_t *code, size_t code_size,
-                      const uint8_t *mirror_data, size_t mirror_size,
-                      const uint8_t *constant_data, size_t constant_size);
+                       const uint8_t *code, size_t code_size,
+                       const uint8_t *mirror_data, size_t mirror_size,
+                       const uint8_t *constant_data, size_t constant_size,
+                       uint64_t genesis_point);
 
 /**
  * 从AETB中提取纯机器码（如果输入是AETB格式）

@@ -16,6 +16,7 @@
  */
 
 #include "let_weaver_bridge.h"
+#include "rom.h"
 
 #include "let_format.h"
 
@@ -236,9 +237,9 @@ static int validate_contract_for_target(const ParsedLet *parsed, int target_form
                 (unsigned)c->machine_bits);
         return -1;
     }
-    if (target_format == LET_WEAVE_TARGET_BIN &&
+    if ((target_format == LET_WEAVE_TARGET_BIN || target_format == LET_WEAVE_TARGET_ROM) &&
         (c->bin_flags & LET_BIN_FLAG_EXPORTABLE) == 0u) {
-        fprintf(stderr, "Error: LET contract forbids BIN export\n");
+        fprintf(stderr, "Error: LET contract forbids BIN/ROM export\n");
         return -1;
     }
 
@@ -458,6 +459,28 @@ int let_weave_to_target(const char *let_file,
                 write_bin_map(output_file, &parsed, (unsigned long long)input.bin_entry_offset);
             }
             break;
+        case LET_WEAVE_TARGET_ROM: {
+            uint64_t entry_off = parsed.hdr->genesis_point;
+            uint64_t rom_size = options ? options->rom_size_bytes : 0u;
+            uint8_t fill_byte = options ? options->rom_fill_byte : 0xFFu;
+            if (options && options->has_bin_entry_offset) {
+                entry_off = options->bin_entry_offset;
+            }
+            ret = rom_generate_image(output_file,
+                                     input.act_flow_buffer,
+                                     (size_t)input.act_flow_size,
+                                     input.mirror_state_buffer,
+                                     (size_t)input.mirror_state_size,
+                                     input.constant_truth_buffer,
+                                     (size_t)input.constant_truth_size,
+                                     entry_off,
+                                     (uint16_t)input.machine_bits,
+                                     (uint16_t)input.target_isa,
+                                     input.aethel_id,
+                                     rom_size,
+                                     fill_byte);
+            break;
+        }
         default:
             fprintf(stderr, "Error: unsupported weaver target: %d\n", target_format);
             ret = -1;

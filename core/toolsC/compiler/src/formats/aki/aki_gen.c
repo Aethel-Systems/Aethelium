@@ -52,6 +52,17 @@
 #include <string.h>
 
 /**
+ * [修复]: 执行 x86_64 规范地址检查与扩展 (Canonical Address Sign-Extension)
+ * 如果地址的第47位为1，高16位必须全为1；否则高16位必须全为0。
+ */
+static inline uint64_t aki_canonicalize(uint64_t addr) {
+    if (addr & (1ULL << 47)) {
+        return addr | 0xFFFF000000000000ULL; /* 高半核符号扩展 */
+    }
+    return addr & 0x0000FFFFFFFFFFFFULL; /* 低半核安全截断 */
+}
+
+/**
  * 生成内核的AethelID
  */
 AethelID aki_generate_aethel_id(const uint8_t *payload) {
@@ -95,9 +106,13 @@ void aki_header_set_sip_vector(AethelBinaryHeader *hdr, uint64_t sip_vector) {
  */
 void aki_header_set_genesis_point(AethelBinaryHeader *hdr, uint64_t genesis_point) {
     if (!hdr) return;
-    hdr->genesis_point = genesis_point;
+    
+    /* --- 修改处 2: 应用符号扩展修复 --- */
+    uint64_t safe_addr = aki_canonicalize(genesis_point);
+    
+    hdr->genesis_point = safe_addr;
     uint64_t *genesis_ext = (uint64_t *)&hdr->format_specific[8];
-    *genesis_ext = genesis_point;
+    *genesis_ext = safe_addr;
 }
 
 /**
@@ -135,10 +150,12 @@ void aki_header_set_aethela_engine(AethelBinaryHeader *hdr, uint64_t entry) {
  * 
  * 严禁简化 - 必须生成足够量级的数据，确保[Full Structure]完整可见
  */
+/* --- 修改处 3: 增加 genesis_point 参数 --- */
 int aki_generate_image(const char *output_file, 
                       const uint8_t *code, size_t code_size,
                       const uint8_t *mirror_data, size_t mirror_size,
-                      const uint8_t *constant_data, size_t constant_size) {
+                      const uint8_t *constant_data, size_t constant_size,
+                      uint64_t genesis_point) {
     if (!output_file || !code || code_size == 0) {
         fprintf(stderr, "[AKI] Error: Invalid parameters\n");
         return -1;
@@ -251,7 +268,8 @@ int aki_generate_image(const char *output_file,
     weave_input.mirror_state_size = expanded_mirror_size;
     weave_input.constant_truth_buffer = expanded_constant;
     weave_input.constant_truth_size = expanded_constant_size;
-    weave_input.genesis_point = 0x100000;  /* 标准 x86-64 加载点 */
+    /* --- 修改处 4: 移除硬编码 0x100000，改用传入参数并进行符号扩展 --- */
+    weave_input.genesis_point = aki_canonicalize(genesis_point); 
     weave_input.aethel_id = kernel_id_copy;  /* Use persistent copy */
     
     /* 调用汇编层的完整结构编织函数 */

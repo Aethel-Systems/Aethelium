@@ -26,6 +26,7 @@
 #include "../silicon_semantics_codegen.h"
 #include "../silicon_semantics.h"
 #include "../builtin_print.h"
+#include "../../formats.h"
 #include "../x86_encoder.h"
 #include "../hardware_layer.h"
 #include <stdlib.h>
@@ -114,6 +115,7 @@ static int has_entry_decorator(const ASTNode *node) {
  *   "naked"     - @gate(type: \naked)
  *   "efi"       - @gate(type: \efi)
  *   "exception" - @gate(type: \exception)
+ *   "rom"       - @gate(type: \rom)
  */
 static const char* get_gate_type(const ASTNode *node) {
     if (!node || node->type != AST_FUNC_DECL) return NULL;
@@ -143,6 +145,7 @@ static const char* get_gate_type(const ASTNode *node) {
             if (strncmp(type_start, "naked", 5) == 0) return "naked";
             if (strncmp(type_start, "exception", 9) == 0) return "exception";
             if (strncmp(type_start, "efi", 3) == 0) return "efi";
+            if (strncmp(type_start, "rom", 3) == 0) return "rom";
         }
     }
     
@@ -318,6 +321,21 @@ static void gen_expression(CodeGenerator *gen, ASTNode *expr) {
             };
             if (codegen_print_call(&ctx, expr, gen) == 0) {
                 break;  /* print()由内置处理器完成 */
+            }
+        }
+
+        /* 检测内置comp()函数（ROM串口输出） */
+        if (is_comp_function_call(expr)) {
+            PrintCompileContext ctx = {
+                .target_format = gen->target_format,
+                .machine_bits = gen->machine_bits,
+                .target_isa = gen->target_isa,
+                .use_uefi = gen->use_uefi,
+                .use_syscall = gen->use_syscall,
+                .raw_metal = 0
+            };
+            if (codegen_comp_call(&ctx, expr, gen) == 0) {
+                break;
             }
         }
         
@@ -1234,9 +1252,19 @@ typedef struct {
     uint32_t byte_size;
 } McStructInfo;
 
+/* ---------------- 替换开始：找到这些旧结构体并覆盖 ---------------- */
+typedef struct {
+    size_t code_off;
+    size_t truth_off;
+} McTruthFixup;
+
 typedef struct {
     AETBGenerator *aetb;
-    McBuf code;
+    McBuf code;                     /* 存放 ActFlow 机器码 */
+    McBuf truth;                    /* 存放 ConstantTruth 数据 */
+    McTruthFixup *truth_fixups;     /* 存放对 ConstantTruth 的重定位记录 */
+    size_t truth_fixup_count;
+    size_t truth_fixup_cap;
     McFuncSymbol *funcs;
     size_t func_count;
     size_t func_cap;
@@ -1254,7 +1282,7 @@ typedef struct {
     uint64_t entry_point;
     int machine_bits;
     const char *target_isa;
-    int in_hardware_block;  /* 硬件块上下文标志 */
+    int in_hardware_block;
     McSymbol *local_symbols;
     size_t local_symbol_count;
     size_t local_symbol_cap;
@@ -1272,6 +1300,7 @@ typedef struct {
     int current_func_is_efi;
     int32_t uefi_system_table_offset;
 } McCtx;
+/* ---------------- 替换结束 ---------------- */
 
 static int mc_emit_mov_acc_arg(McCtx *ctx, int arg_idx);
 static int mc_emit_mov_acc_from_reg_id(McCtx *ctx, int reg_id);
@@ -1331,6 +1360,77 @@ static int mc_emit_u64(McBuf *b, uint64_t v) {
         b->data[b->size + (size_t)i] = (uint8_t)((v >> (i * 8)) & 0xFFu);
     }
     b->size += 8;
+    return 0;
+}
+
+static int mc_emit_mov_dx_imm(McCtx *ctx, uint16_t port) {
+    if (!ctx) return -1;
+    if (ctx->machine_bits == 16) {
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, imm16 */
+        return mc_emit_u16(&ctx->code, port);
+    }
+    if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, imm32 */
+    return mc_emit_u32(&ctx->code, (uint32_t)port);
+}
+
+static int mc_emit_out_dx_al_imm(McCtx *ctx, uint16_t port, uint8_t val) {
+    if (mc_emit_mov_dx_imm(ctx, port) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
+    if (mc_emit_u8(&ctx->code, val) != 0) return -1;
+    return mc_emit_u8(&ctx->code, 0xEE); /* out dx, al */
+}
+
+static int mc_emit_in_al_dx(McCtx *ctx, uint16_t port) {
+    if (mc_emit_mov_dx_imm(ctx, port) != 0) return -1;
+    return mc_emit_u8(&ctx->code, 0xEC); /* in al, dx */
+}
+
+static int mc_emit_vga_text_mode_init(McCtx *ctx) {
+    static const uint8_t vga_seq[5] = {0x03,0x00,0x03,0x00,0x02};
+    static const uint8_t vga_crtc[25] = {
+        0x5F,0x4F,0x50,0x82,0x55,0x81,0xBF,0x1F,0x00,0x4F,0x0D,0x0E,0x00,
+        0x00,0x00,0x50,0x9C,0x8E,0x8F,0x28,0x1F,0x96,0xB9,0xA3,0xFF
+    };
+    static const uint8_t vga_gc[9]  = {0x00,0x00,0x00,0x00,0x00,0x10,0x0E,0x00,0xFF};
+    static const uint8_t vga_ac[21] = {
+        0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,0x08,0x09,0x0A,0x0B,0x0C,0x0D,0x0E,0x0F,
+        0x0C,0x00,0x0F,0x08,0x00
+    };
+    size_t i;
+    if (!ctx) return -1;
+
+    if (mc_emit_out_dx_al_imm(ctx, 0x3C2, 0x67) != 0) return -1; /* misc */
+
+    /* [修复点1]：必须先对 Sequencer 进行同步复位，否则时钟计算异常导致窗口不展开 */
+    if (mc_emit_out_dx_al_imm(ctx, 0x3C4, 0x00) != 0) return -1;
+    if (mc_emit_out_dx_al_imm(ctx, 0x3C5, 0x01) != 0) return -1;
+
+    for (i = 0; i < 5; i++) {
+        if (mc_emit_out_dx_al_imm(ctx, 0x3C4, (uint8_t)i) != 0) return -1;
+        if (mc_emit_out_dx_al_imm(ctx, 0x3C5, vga_seq[i]) != 0) return -1;
+    }
+
+    if (mc_emit_out_dx_al_imm(ctx, 0x3D4, 0x11) != 0) return -1;
+    if (mc_emit_out_dx_al_imm(ctx, 0x3D5, (uint8_t)(vga_crtc[0x11] & 0x7F)) != 0) return -1;
+
+    for (i = 0; i < 25; i++) {
+        if (mc_emit_out_dx_al_imm(ctx, 0x3D4, (uint8_t)i) != 0) return -1;
+        /* [修复点2]：vga_crtc 索引 0x14 已从错误的 0x40 修正为标准的 0x1F，关闭破坏窗口宽度的双字模式 */
+        if (mc_emit_out_dx_al_imm(ctx, 0x3D5, vga_crtc[i]) != 0) return -1;
+    }
+
+    for (i = 0; i < 9; i++) {
+        if (mc_emit_out_dx_al_imm(ctx, 0x3CE, (uint8_t)i) != 0) return -1;
+        if (mc_emit_out_dx_al_imm(ctx, 0x3CF, vga_gc[i]) != 0) return -1;
+    }
+
+    for (i = 0; i < 21; i++) {
+        if (mc_emit_in_al_dx(ctx, 0x3DA) != 0) return -1; /* reset flip-flop */
+        if (mc_emit_out_dx_al_imm(ctx, 0x3C0, (uint8_t)i) != 0) return -1;
+        if (mc_emit_out_dx_al_imm(ctx, 0x3C0, vga_ac[i]) != 0) return -1;
+    }
+    if (mc_emit_in_al_dx(ctx, 0x3DA) != 0) return -1;
+    if (mc_emit_out_dx_al_imm(ctx, 0x3C0, 0x20) != 0) return -1; /* enable display */
     return 0;
 }
 
@@ -1483,7 +1583,49 @@ static int mc_emit_store_reg_to_base_disp(McCtx *ctx, int base_reg_id, int src_r
 }
 
 static int mc_emit_load_acc_from_rax_disp(McCtx *ctx, int32_t disp, uint32_t width) {
-    if (!ctx || !mc_is_x64(ctx)) return -1;
+    if (!ctx) return -1;
+    
+    if (ctx->machine_bits == 16) {
+        if (mc_emit_u8(&ctx->code, 0x93) != 0) return -1; /* xchg ax, bx */
+        uint8_t opcode = (width == 1) ? 0x8A : 0x8B;
+        if (mc_emit_u8(&ctx->code, opcode) != 0) return -1;
+        
+        if (disp == 0) {
+            if (mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* [bx], ax/al */
+        } else if (disp >= -128 && disp <= 127) {
+            if (mc_emit_u8(&ctx->code, 0x47) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, (uint8_t)disp) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x87) != 0) return -1;
+            if (mc_emit_u16(&ctx->code, (uint16_t)disp) != 0) return -1;
+        }
+        
+        /* 若为读取字节(Int8)，需要补齐高位以清空垃圾数据 */
+        if (width == 1) {
+            if (mc_emit_u8(&ctx->code, 0x30) != 0) return -1; /* xor ah, ah */
+            if (mc_emit_u8(&ctx->code, 0xE4) != 0) return -1;
+        }
+        return 0;
+    }
+    
+    if (ctx->machine_bits == 32) {
+        switch (width) {
+            case 1:
+                if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB6) != 0) return -1;
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
+            case 2:
+                if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB7) != 0) return -1;
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
+            default:
+                if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
+        }
+    }
+    
+    /* 64位模式 */
     switch (width) {
         case 1:
             if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB6) != 0) return -1;
@@ -1494,12 +1636,12 @@ static int mc_emit_load_acc_from_rax_disp(McCtx *ctx, int32_t disp, uint32_t wid
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
         case 4:
-            if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1; /* mov eax, [rax+disp] */
+            if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
         case 8:
         default:
-            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0) return -1; /* mov rax, [rax+disp] */
+            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x00, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x00, disp);
     }
@@ -1529,23 +1671,61 @@ static int __attribute__((unused)) mc_emit_store_acc_to_rax_disp(McCtx *ctx, int
 }
 
 static int mc_emit_store_rcx_to_rax_disp(McCtx *ctx, int32_t disp, uint32_t width) {
-    if (!ctx || !mc_is_x64(ctx)) return -1;
+    if (!ctx) return -1;
+    
+    if (ctx->machine_bits == 16) {
+        /* 16位实模式下，AX 不能作为内存寻址的基址寄存器 [AX] 是非法的。
+         * 必须先交换到 BX，即：xchg ax, bx -> mov [bx], cx -> xchg ax, bx */
+        if (mc_emit_u8(&ctx->code, 0x93) != 0) return -1; /* xchg ax, bx */
+        uint8_t opcode = (width == 1) ? 0x88 : 0x89;
+        if (mc_emit_u8(&ctx->code, opcode) != 0) return -1;
+        
+        if (disp == 0) {
+            if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1; /* [bx], cx/cl */
+        } else if (disp >= -128 && disp <= 127) {
+            if (mc_emit_u8(&ctx->code, 0x4F) != 0) return -1; /* [bx+disp8] */
+            if (mc_emit_u8(&ctx->code, (uint8_t)disp) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x8F) != 0) return -1; /* [bx+disp16] */
+            if (mc_emit_u16(&ctx->code, (uint16_t)disp) != 0) return -1;
+        }
+        return mc_emit_u8(&ctx->code, 0x93); /* xchg ax, bx */
+    }
+    
+    if (ctx->machine_bits == 32) {
+        switch (width) {
+            case 1:
+                if (mc_emit_u8(&ctx->code, 0x88) != 0) return -1; /* mov [eax+disp], cl */
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
+            case 2:
+                if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
+            default:
+                if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+                if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
+                return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
+        }
+    }
+    
+    /* 64位模式 */
     switch (width) {
         case 1:
-            if (mc_emit_u8(&ctx->code, 0x88) != 0) return -1; /* mov [rax+disp], cl */
+            if (mc_emit_u8(&ctx->code, 0x88) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
         case 2:
-            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0) return -1; /* mov [rax+disp], cx */
+            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
         case 4:
-            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1; /* mov [rax+disp], ecx */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
         case 8:
         default:
-            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0) return -1; /* mov [rax+disp], rcx */
+            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
             if (disp >= -128 && disp <= 127) return mc_emit_modrm_disp8(&ctx->code, 0x08, disp);
             return mc_emit_modrm_disp32(&ctx->code, 0x08, disp);
     }
@@ -1778,10 +1958,27 @@ static int mc_symbol_base_addr_to_rax(McCtx *ctx, const McSymbol *sym) {
     if (!ctx || !sym) return -1;
     if (sym->kind == MC_SYM_PARAM) return mc_emit_mov_acc_arg(ctx, sym->param_index);
     if (sym->kind == MC_SYM_STACK) {
-        if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0x8D) != 0) return -1; /* lea */
-        if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1; /* rax, [rbp+disp32] */
-        return mc_emit_u32(&ctx->code, (uint32_t)sym->stack_offset);
+        if (ctx->machine_bits == 16) {
+            /* 16位: lea ax, [bp + disp] -> 8D 46/86 */
+            if (mc_emit_u8(&ctx->code, 0x8D) != 0) return -1;
+            if (sym->stack_offset >= -128 && sym->stack_offset <= 127) {
+                if (mc_emit_u8(&ctx->code, 0x46) != 0) return -1;
+                return mc_emit_u8(&ctx->code, (uint8_t)sym->stack_offset);
+            } else {
+                if (mc_emit_u8(&ctx->code, 0x86) != 0) return -1;
+                return mc_emit_u16(&ctx->code, (uint16_t)sym->stack_offset);
+            }
+        } else if (ctx->machine_bits == 32) {
+            if (mc_emit_u8(&ctx->code, 0x8D) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+            return mc_emit_u32(&ctx->code, (uint32_t)sym->stack_offset);
+        } else {
+            /* 64位 */
+            if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x8D) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+            return mc_emit_u32(&ctx->code, (uint32_t)sym->stack_offset);
+        }
     }
     if (sym->kind == MC_SYM_REG_ALIAS) return mc_emit_mov_acc_from_reg_id(ctx, sym->reg_id);
     return -1;
@@ -1894,9 +2091,17 @@ static int mc_emit_indexed_address(McCtx *ctx, ASTNode *access) {
             if (mc_symbol_base_addr_to_rax(ctx, obj_sym) != 0) return -1;
         }
         if (field->offset != 0) {
-            if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-            if (mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* add rax, imm32 */
-            if (mc_emit_u32(&ctx->code, field->offset) != 0) return -1;
+            if (ctx->machine_bits == 16) {
+                if (mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* add ax, imm16 */
+                if (mc_emit_u16(&ctx->code, (uint16_t)field->offset) != 0) return -1;
+            } else if (ctx->machine_bits == 32) {
+                if (mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* add eax, imm32 */
+                if (mc_emit_u32(&ctx->code, field->offset) != 0) return -1;
+            } else {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x05) != 0) return -1;
+                if (mc_emit_u32(&ctx->code, field->offset) != 0) return -1;
+            }
         }
     } else {
         return -1;
@@ -1907,11 +2112,23 @@ static int mc_emit_indexed_address(McCtx *ctx, ASTNode *access) {
     if (elem_size > 1) {
         if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1;
         if (mc_emit_mov_acc_imm(ctx, (int64_t)elem_size) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xAF) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; /* pop to CX/ECX/RCX */
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0xF7) != 0 || mc_emit_u8(&ctx->code, 0xE9) != 0) return -1; /* imul cx */
+        } else if (ctx->machine_bits == 32) {
+            if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xAF) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1;
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xAF) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1;
+        }
     }
-    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; /* pop base to RCX */
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; /* add rax, rcx */
+    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; /* pop base to CX/ECX/RCX */
+    if (ctx->machine_bits == 16) {
+        if (mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; /* add ax, cx */
+    } else if (ctx->machine_bits == 32) {
+        if (mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; /* add eax, ecx */
+    } else {
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; /* add rax, rcx */
+    }
     return 0;
 }
 
@@ -2188,51 +2405,118 @@ static int mc_emit_mov_acc_arg(McCtx *ctx, int arg_idx) {
 }
 
 static int mc_emit_mov_acc_from_reg_id(McCtx *ctx, int reg_id) {
-    uint8_t rex = 0x48;
-    uint8_t modrm;
-    if (!ctx || !mc_is_x64(ctx) || reg_id < 0 || reg_id > 15) return -1;
-    if (reg_id > 7) rex |= 0x01; /* B */
-    modrm = 0xC0 | (reg_id & 0x7); /* mov rax, r/m64 */
-    if (mc_emit_u8(&ctx->code, rex) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, modrm) != 0) return -1;
-    return 0;
+    if (!ctx || reg_id < 0 || reg_id > 15) return -1;
+    
+    if (ctx->machine_bits == 16) {
+        /* 16位: mov ax, reg16 -> 89 /r (反向编码通常更安全) 或 8B C0+id */
+        if (reg_id > 7) return -1; /* 实模式无 R8-R15 */
+        if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    } else if (ctx->machine_bits == 32) {
+        if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    } else {
+        /* 64位 */
+        uint8_t rex = 0x48;
+        if (reg_id > 7) rex |= 0x01;
+        if (mc_emit_u8(&ctx->code, rex) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    }
 }
 
 static int mc_emit_mov_reg_id_from_acc(McCtx *ctx, int reg_id) {
-    uint8_t rex = 0x48;
-    uint8_t modrm;
-    if (!ctx || !mc_is_x64(ctx) || reg_id < 0 || reg_id > 15) return -1;
-    if (reg_id > 7) rex |= 0x01; /* B */
-    modrm = 0xC0 | (reg_id & 0x7); /* mov r/m64, rax */
-    if (mc_emit_u8(&ctx->code, rex) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, modrm) != 0) return -1;
-    return 0;
+    if (!ctx || reg_id < 0 || reg_id > 15) return -1;
+
+    if (ctx->machine_bits == 16) {
+        if (reg_id > 7) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    } else if (ctx->machine_bits == 32) {
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    } else {
+        uint8_t rex = 0x48;
+        if (reg_id > 7) rex |= 0x01;
+        if (mc_emit_u8(&ctx->code, rex) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        return mc_emit_u8(&ctx->code, (uint8_t)(0xC0 | (reg_id & 0x7)));
+    }
 }
 
 static int mc_emit_load_acc_from_stack(McCtx *ctx, int32_t stack_offset) {
-    if (!ctx || !mc_is_x64(ctx) || stack_offset >= 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
-    if (stack_offset >= -128) {
-        if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
-        return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+    if (!ctx || stack_offset >= 0) return -1;
+    
+    if (ctx->machine_bits == 16) {
+        /* 16位实模式使用 BP 寄存器寻址: mov ax, [bp + disp] */
+        if (stack_offset >= -128 && stack_offset <= 127) {
+            /* mov ax, [bp+disp8] -> 8B 46 (disp8) */
+            if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x46) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        } else {
+            /* mov ax, [bp+disp16] -> 8B 86 (disp16) */
+            if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x86) != 0) return -1;
+            return mc_emit_u16(&ctx->code, (uint16_t)stack_offset);
+        }
+    } else if (ctx->machine_bits == 32) {
+        /* 32位模式: mov eax, [ebp + disp] */
+        if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+        if (stack_offset >= -128 && stack_offset <= 127) {
+            if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        }
+        if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+        return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
+    } else {
+        /* 64位模式 */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x8B) != 0) return -1;
+        if (stack_offset >= -128) {
+            if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        }
+        if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+        return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
     }
-    if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
-    return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
 }
 
 static int mc_emit_store_acc_to_stack(McCtx *ctx, int32_t stack_offset) {
-    if (!ctx || !mc_is_x64(ctx) || stack_offset >= 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
-    if (stack_offset >= -128) {
-        if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
-        return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+    if (!ctx || stack_offset >= 0) return -1;
+
+    if (ctx->machine_bits == 16) {
+        /* 16位: mov [bp + disp], ax */
+        if (stack_offset >= -128 && stack_offset <= 127) {
+            /* 89 46 (disp8) */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x46) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        } else {
+            /* 89 86 (disp16) */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x86) != 0) return -1;
+            return mc_emit_u16(&ctx->code, (uint16_t)stack_offset);
+        }
+    } else if (ctx->machine_bits == 32) {
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (stack_offset >= -128 && stack_offset <= 127) {
+            if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        }
+        if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+        return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
+    } else {
+        /* 64位 */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (stack_offset >= -128) {
+            if (mc_emit_u8(&ctx->code, 0x45) != 0) return -1;
+            return mc_emit_u8(&ctx->code, (uint8_t)stack_offset);
+        }
+        if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+        return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
     }
-    if (mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
-    return mc_emit_u32(&ctx->code, (uint32_t)stack_offset);
 }
 
 static int mc_emit_pop_argreg(McCtx *ctx, int arg_idx) {
@@ -2389,6 +2673,8 @@ static McPrintMode mc_select_print_mode(const McCtx *ctx) {
     /* UEFI/PE targets must never emit syscall-based print stubs. */
     if (ctx->target_format == 4 || ctx->target_format == 7) return MC_PRINT_MODE_UEFI;
     if (ctx->current_func_is_efi) return MC_PRINT_MODE_UEFI;
+    /* ROM firmware uses raw hardware output (VGA/COM) */
+    if (ctx->target_format == 8) return MC_PRINT_MODE_RAW;
     /* RAW print is only for flat machine code BIN. */
     if (ctx->target_format == 6) return MC_PRINT_MODE_RAW;
     return MC_PRINT_MODE_SYSCALL;
@@ -2400,25 +2686,69 @@ static int mc_emit_mov_esi_imm32(McCtx *ctx, uint32_t imm) {
 }
 
 static int mc_emit_mov_rdi_rax(McCtx *ctx) {
+    if (!ctx) return -1;
+    /* 支持 16 位 (AX -> DI) 和 32 位 (EAX -> EDI) */
+    if (ctx->machine_bits == 16 || ctx->machine_bits == 32) {
+        return (mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC7)) ? -1 : 0;
+    }
+    /* 64 位 (RAX -> RDI) */
     return (mc_emit_u8(&ctx->code, 0x48) || mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC7)) ? -1 : 0;
 }
 
 static int mc_emit_mov_rdx_rax(McCtx *ctx) {
+    if (!ctx) return -1;
+    if (ctx->machine_bits == 16 || ctx->machine_bits == 32) {
+        return (mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC2)) ? -1 : 0;
+    }
     return (mc_emit_u8(&ctx->code, 0x48) || mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC2)) ? -1 : 0;
 }
 
 static int mc_emit_strlen_rdi_to_rsi(McCtx *ctx) {
     if (!ctx) return -1;
-    /* mov rsi, rdi; xor edx,edx; loop: cmp byte [rsi],0; jz done; inc rsi; inc rdx; jmp loop; done: mov rsi,rdx */
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xFE) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xD2) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x80) != 0 || mc_emit_u8(&ctx->code, 0x3E) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x08) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC6) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC2) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0xEB) != 0 || mc_emit_u8(&ctx->code, 0xF3) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1;
-    return 0;
+    if (ctx->machine_bits == 16) {
+        /* mov si, di */
+        if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xFE) != 0) return -1;
+        /* xor dx, dx */
+        if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xD2) != 0) return -1;
+        /* loop: cmp byte [si], 0 */
+        if (mc_emit_u8(&ctx->code, 0x80) != 0 || mc_emit_u8(&ctx->code, 0x3C) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1;
+        /* jz done (+4) */
+        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x04) != 0) return -1;
+        /* inc si */
+        if (mc_emit_u8(&ctx->code, 0x46) != 0) return -1;
+        /* inc dx */
+        if (mc_emit_u8(&ctx->code, 0x42) != 0) return -1;
+        /* jmp loop (-9 = 0xF7) */
+        if (mc_emit_u8(&ctx->code, 0xEB) != 0 || mc_emit_u8(&ctx->code, 0xF7) != 0) return -1;
+        /* done: mov si, dx */
+        if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1;
+        return 0;
+    } else {
+        /* 32/64 bit */
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xFE) != 0) return -1; /* mov esi, edi */
+        
+        if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xD2) != 0) return -1; /* xor edx, edx */
+        
+        /* loop: cmp byte [esi], 0 */
+        if (mc_emit_u8(&ctx->code, 0x80) != 0 || mc_emit_u8(&ctx->code, 0x3E) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1;
+        /* jz done (+8) */
+        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x08) != 0) return -1;
+        
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC6) != 0) return -1; /* inc esi */
+        
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* inc edx */
+        
+        /* jmp loop (-15 = 0xF1) */
+        if (mc_emit_u8(&ctx->code, 0xEB) != 0 || mc_emit_u8(&ctx->code, 0xF1) != 0) return -1;
+        
+        /* done: mov esi, edx */
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1;
+        return 0;
+    }
 }
 
 static int mc_emit_load_rsi_from_stack(McCtx *ctx, int32_t stack_offset) {
@@ -2441,77 +2771,129 @@ static int mc_emit_syscall_print_call(McCtx *ctx) {
 
 static int mc_emit_raw_print_call(McCtx *ctx) {
     if (!ctx) return -1;
-    /* input: rdi=buf, rsi=len */
-    if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, 0x3F8 */
-    if (mc_emit_u32(&ctx->code, 0x3F8) != 0) return -1;
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x85) != 0 || mc_emit_u8(&ctx->code, 0xF6) != 0) return -1; /* test rsi,rsi */
-    if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x0B) != 0) return -1; /* jz done */
-    if (mc_emit_u8(&ctx->code, 0x8A) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov al,[rdi] */
-    if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* inc rdi */
-    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xCE) != 0) return -1; /* dec rsi */
-    if (mc_emit_u8(&ctx->code, 0x75) != 0 || mc_emit_u8(&ctx->code, 0xF5) != 0) return -1; /* jnz loop */
-    return 0;
+    
+    if (ctx->machine_bits == 16) {
+        /* mov dx, 0x3F8 */
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+        if (mc_emit_u16(&ctx->code, 0x03F8) != 0) return -1;
+        /* test si, si */
+        if (mc_emit_u8(&ctx->code, 0x85) != 0 || mc_emit_u8(&ctx->code, 0xF6) != 0) return -1;
+        /* jz done (+7) */
+        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1;
+        /* loop: mov al, [di] */
+        if (mc_emit_u8(&ctx->code, 0x8A) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1;
+        /* out dx, al */
+        if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1;
+        /* inc di */
+        if (mc_emit_u8(&ctx->code, 0x47) != 0) return -1;
+        /* dec si */
+        if (mc_emit_u8(&ctx->code, 0x4E) != 0) return -1;
+        /* jnz loop (-7 = 0xF9) */
+        if (mc_emit_u8(&ctx->code, 0x75) != 0 || mc_emit_u8(&ctx->code, 0xF9) != 0) return -1;
+        return 0;
+    } else {
+        /* 32/64 bit */
+        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+        if (mc_emit_u32(&ctx->code, 0x000003F8) != 0) return -1;
+        
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x85) != 0 || mc_emit_u8(&ctx->code, 0xF6) != 0) return -1;
+        
+        if (mc_emit_u8(&ctx->code, 0x74) != 0 || mc_emit_u8(&ctx->code, 0x0B) != 0) return -1;
+        
+        if (mc_emit_u8(&ctx->code, 0x8A) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1;
+        
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1;
+        
+        if (ctx->machine_bits == 64 && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xCE) != 0) return -1;
+        
+        if (mc_emit_u8(&ctx->code, 0x75) != 0 || mc_emit_u8(&ctx->code, 0xF5) != 0) return -1;
+        return 0;
+    }
 }
 
 static int mc_emit_raw_print_bytes_immediate(McCtx *ctx, const uint8_t *buf, size_t len) {
     size_t i;
     if (!ctx || !buf) return -1;
+    
+    /* 
+     * [修复] 移除所有硬编码的硬件初始化逻辑 (UART Init / VGA Init)。
+     * 遵循硬件层直通理念，假定开发者已在外围配置好硬件时钟和属性。
+     * 此处仅进行最纯粹的物理端口 (0x3F8/0xE9) 和显存地址 (0xB8000) 的数据推送。
+     */
     if (ctx->machine_bits == 16) {
-        if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, 0x0003 */
-        if (mc_emit_u16(&ctx->code, 0x0003u) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
-        if (mc_emit_u8(&ctx->code, 0xB4) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov ah,0x05 (select active page) */
-        if (mc_emit_u8(&ctx->code, 0xB0) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1; /* mov al,0 */
-        if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
-        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, 0x3F8 */
-        if (mc_emit_u16(&ctx->code, 0x03F8u) != 0) return -1;
         if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, 0xB800 */
         if (mc_emit_u16(&ctx->code, 0xB800u) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es,ax */
-        if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1; /* xor di,di */
-    } else {
-        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, 0x3F8 */
-        if (mc_emit_u32(&ctx->code, 0x03F8u) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0xBF) != 0) return -1; /* mov edi, 0xB8000 */
-        if (mc_emit_u32(&ctx->code, 0x000B8000u) != 0) return -1;
-    }
-    for (i = 0; i < len; i++) {
-        if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
-        if (mc_emit_u8(&ctx->code, buf[i]) != 0) return -1;
-        if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
-        if (buf[i] == '\n') {
-            if (ctx->machine_bits == 16) {
-                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add di,160 */
+        if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es, ax */
+        if (mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1; /* xor di, di */
+        
+        for (i = 0; i < len; i++) {
+            uint8_t ch = buf[i];
+            
+            /* COM1 (0x3F8) 和 debugcon (0xE9) 推流 */
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov dx, 0x3F8 */
+            if (mc_emit_u16(&ctx->code, 0x03F8u) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
+            if (mc_emit_u8(&ctx->code, ch) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
+            
+            if (mc_emit_u8(&ctx->code, 0xE6) != 0) return -1; /* out imm8, al */
+            if (mc_emit_u8(&ctx->code, 0xE9) != 0) return -1; /* port 0xE9 */
+            
+            /* VGA 文本缓冲写入 */
+            if (ch == '\n') {
+                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add di, 160 */
                 if (mc_emit_u16(&ctx->code, 160u) != 0) return -1;
-            } else {
-                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add edi,160 */
-                if (mc_emit_u32(&ctx->code, 160u) != 0) return -1;
+                continue;
             }
-            continue;
-        }
-        if (ctx->machine_bits == 16) {
             if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, imm16 */
-            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0700u | (uint16_t)buf[i])) != 0) return -1;
+            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0F00u | (uint16_t)ch)) != 0) return -1; /* 亮白底黑字属性 */
             if (mc_emit_u8(&ctx->code, 0x26) != 0) return -1; /* es: */
-            if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov [di],ax */
-            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add di,2 */
-            /* BIOS teletype mirror for stable on-screen visibility in early real mode */
-            if (mc_emit_u8(&ctx->code, 0xB4) != 0 || mc_emit_u8(&ctx->code, 0x0E) != 0) return -1; /* mov ah,0x0E */
-            if (mc_emit_u8(&ctx->code, 0xB7) != 0 || mc_emit_u8(&ctx->code, 0x00) != 0) return -1; /* mov bh,0 */
-            if (mc_emit_u8(&ctx->code, 0xB3) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov bl,7 */
-            if (mc_emit_u8(&ctx->code, 0xCD) != 0 || mc_emit_u8(&ctx->code, 0x10) != 0) return -1; /* int 10h */
-        } else {
+            if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov [di], ax */
+            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add di, 2 */
+        }
+        return 0;
+    }
+
+    if (ctx->machine_bits == 32 || ctx->machine_bits == 64) {
+        if (mc_emit_u8(&ctx->code, 0xBF) != 0) return -1; /* mov edi, 0x000B8000 */
+        if (mc_emit_u32(&ctx->code, 0x000B8000u) != 0) return -1;
+        
+        for (i = 0; i < len; i++) {
+            uint8_t ch = buf[i];
+            
+            /* COM1 输出 */
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* mov edx, 0x3F8 */
+            if (mc_emit_u32(&ctx->code, 0x000003F8u) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1; /* mov al, imm8 */
+            if (mc_emit_u8(&ctx->code, ch) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
+            
+            /* Debugcon */
+            if (mc_emit_u8(&ctx->code, 0xE6) != 0) return -1; /* out imm8, al */
+            if (mc_emit_u8(&ctx->code, 0xE9) != 0) return -1; 
+            
+            /* VGA 缓冲 */
+            if (ch == '\n') {
+                if (mc_emit_u8(&ctx->code, 0x81) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* add edi, 160 */
+                if (mc_emit_u32(&ctx->code, 160u) != 0) return -1;
+                continue;
+            }
             if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xB8) != 0) return -1; /* mov ax, imm16 */
-            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0700u | (uint16_t)buf[i])) != 0) return -1;
-            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov [edi/rdi],ax */
+            if (mc_emit_u16(&ctx->code, (uint16_t)(0x0F00u | (uint16_t)ch)) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0) return -1; /* mov [edi/rdi], ax */
             if (ctx->machine_bits == 64) {
                 if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
             }
-            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add edi/rdi,2 */
+            if (mc_emit_u8(&ctx->code, 0x83) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* add edi/rdi, 2 */
         }
+        return 0;
     }
-    return 0;
+    
+    return -1;
 }
 
 static int mc_emit_uefi_print_call(McCtx *ctx) {
@@ -2529,24 +2911,106 @@ static int mc_emit_uefi_print_call(McCtx *ctx) {
     return 0;
 }
 
+static int mc_emit_comp_bytes_immediate(McCtx *ctx, const uint8_t *buf, size_t len) {
+    size_t i;
+    if (!ctx || !buf) return -1;
+
+    /* 
+     * [修复] 移除干扰性的状态查询轮询 (test al, 0x20)。
+     * 在早期的 QEMU 或冷启动硬件状态下，读取状态寄存器未准备好可能导致流挂起。
+     * 直接强制向数据端口推流，保障最低限度的 ROM 调试链路活跃。
+     */
+    for (i = 0; i < len; i++) {
+        uint8_t ch = buf[i];
+        if (ctx->machine_bits == 16) {
+            /* mov dx, 0x3F8; mov al, ch; out dx, al */
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u16(&ctx->code, 0x03F8u) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xB0) != 0 || mc_emit_u8(&ctx->code, ch) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1;
+            continue;
+        }
+        if (ctx->machine_bits == 32 || ctx->machine_bits == 64) {
+            /* mov edx, 0x3F8; mov al, ch; out dx, al */
+            if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+            if (mc_emit_u32(&ctx->code, 0x03F8u) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xB0) != 0 || mc_emit_u8(&ctx->code, ch) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1;
+            continue;
+        }
+        return -1;
+    }
+    return 0;
+}
+
+static int mc_emit_vga_font_write8x16(McCtx *ctx, uint8_t code,
+                                      uint8_t r0, uint8_t r1, uint8_t r2, uint8_t r3,
+                                      uint8_t r4, uint8_t r5, uint8_t r6, uint8_t r7) {
+    uint16_t di;
+    uint8_t rows[8];
+    int i;
+    if (!ctx) return -1;
+    if (ctx->target_format != 8) return -1; /* FORMAT_ROM only */
+    if (ctx->machine_bits != 16) return -1; /* real-mode font plane write */
+
+    rows[0] = r0; rows[1] = r1; rows[2] = r2; rows[3] = r3;
+    rows[4] = r4; rows[5] = r5; rows[6] = r6; rows[7] = r7;
+
+    /* VGA font memory is exposed via plane 2 at A000:0000, with 32 bytes per glyph slot. */
+    di = (uint16_t)((uint16_t)code << 5); /* code * 32 */
+
+    /* mov ax,0xA000; mov es,ax; mov di,imm16 */
+    if (mc_emit_u8(&ctx->code, 0xB8) != 0) return -1;
+    if (mc_emit_u16(&ctx->code, 0xA000u) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x8E) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov es,ax */
+    if (mc_emit_u8(&ctx->code, 0xBF) != 0) return -1; /* mov di, imm16 */
+    if (mc_emit_u16(&ctx->code, di) != 0) return -1;
+
+    for (i = 0; i < 8; i++) {
+        uint8_t b = rows[i];
+        /* mov al, imm8 */
+        if (mc_emit_u8(&ctx->code, 0xB0) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, b) != 0) return -1;
+        /* mov es:[di], al ; inc di ; mov es:[di], al ; inc di */
+        if (mc_emit_u8(&ctx->code, 0x26) != 0) return -1; /* ES: */
+        if (mc_emit_u8(&ctx->code, 0x88) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* mov [di], al */
+        if (mc_emit_u8(&ctx->code, 0x47) != 0) return -1; /* inc di */
+        if (mc_emit_u8(&ctx->code, 0x26) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x88) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x47) != 0) return -1;
+    }
+    return 0;
+}
+
 static int mc_emit_embed_blob_and_lea_reg(McCtx *ctx, const uint8_t *blob, size_t blob_len, int dst_reg_low3) {
-    int32_t disp32;
-    size_t data_pos;
-    size_t lea_pos;
+    size_t truth_pos;
     uint8_t modrm;
     if (!ctx || !blob || blob_len == 0 || dst_reg_low3 < 0 || dst_reg_low3 > 7) return -1;
     if (blob_len > 0x7FFFFFFFul) return -1;
-    if (mc_emit_u8(&ctx->code, 0xE9) != 0) return -1; /* jmp rel32 */
-    if (mc_emit_u32(&ctx->code, (uint32_t)blob_len) != 0) return -1;
-    data_pos = ctx->code.size;
-    if (mc_reserve(&ctx->code, blob_len) != 0) return -1;
-    memcpy(ctx->code.data + ctx->code.size, blob, blob_len);
-    ctx->code.size += blob_len;
-    lea_pos = ctx->code.size;
-    disp32 = (int32_t)((int64_t)data_pos - (int64_t)(lea_pos + 7));
+    
+    /* 1. 将数据剥离到 ConstantTruth 缓冲区，保持 ActFlow 纯净 */
+    truth_pos = ctx->truth.size;
+    if (mc_reserve(&ctx->truth, blob_len) != 0) return -1;
+    memcpy(ctx->truth.data + ctx->truth.size, blob, blob_len);
+    ctx->truth.size += blob_len;
+    
+    /* 2. 发射 lea reg, [rip + disp32] 到 ActFlow */
     modrm = (uint8_t)(0x05 | ((dst_reg_low3 & 0x7) << 3));
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 || mc_emit_u8(&ctx->code, modrm) != 0) return -1;
-    return mc_emit_u32(&ctx->code, (uint32_t)disp32);
+    
+    /* 3. 记录真理修复点 (disp32 的位置) */
+    if (ctx->truth_fixup_count >= ctx->truth_fixup_cap) {
+        ctx->truth_fixup_cap = ctx->truth_fixup_cap == 0 ? 32 : ctx->truth_fixup_cap * 2;
+        McTruthFixup *grown = (McTruthFixup *)realloc(ctx->truth_fixups, ctx->truth_fixup_cap * sizeof(McTruthFixup));
+        if (!grown) return -1;
+        ctx->truth_fixups = grown;
+    }
+    ctx->truth_fixups[ctx->truth_fixup_count].code_off = ctx->code.size;
+    ctx->truth_fixups[ctx->truth_fixup_count].truth_off = truth_pos;
+    ctx->truth_fixup_count++;
+    
+    /* 4. 发射 4 字节占位符等待最终化时覆写 */
+    return mc_emit_u32(&ctx->code, 0);
 }
 
 static int mc_emit_print_buffer(McCtx *ctx, McPrintMode mode, const uint8_t *buf, size_t len) {
@@ -2606,9 +3070,9 @@ static int mc_emit_print_text(McCtx *ctx, McPrintMode mode, const char *text) {
 
 static int mc_emit_print_expr_runtime(McCtx *ctx, McPrintMode mode, ASTNode *expr) {
     if (!ctx || !expr) return -1;
-    if (mode == MC_PRINT_MODE_RAW && !mc_is_x64(ctx)) {
-        return -1; /* 16/32-bit RAW mode only supports compile-time text printing */
-    }
+    
+    /* [修改核心]：删除了那段让人恶心的 16/32 位 ROM 模式拦截代码 */
+    
     if (mc_emit_expr(ctx, expr) != 0) return -1;
     if (mode == MC_PRINT_MODE_UEFI) {
         if (mc_emit_mov_rdx_rax(ctx) != 0) return -1;
@@ -3280,6 +3744,50 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                     if (mc_emit_print_text(ctx, mode, "\n") != 0) return -1;
                 }
                 return 0;
+            }
+
+            /* 内置 comp(): ROM串口输出（COM1），不做任何初始化 */
+            if (expr->data.call.func && expr->data.call.func->type == AST_IDENT &&
+                strcmp(expr->data.call.func->data.ident.name, "comp") == 0) {
+                ASTNode *arg0;
+                char tmp[128];
+                if (ctx->target_format != 8) {
+                    return -1;
+                }
+                if (expr->data.call.arg_count != 1 || !expr->data.call.args || !expr->data.call.args[0]) {
+                    return -1;
+                }
+                arg0 = expr->data.call.args[0];
+                if (mc_ast_literal_is_string(arg0)) {
+                    const char *s = arg0->data.literal.value.str_value;
+                    return mc_emit_comp_bytes_immediate(ctx, (const uint8_t *)s, strlen(s));
+                }
+                if (arg0->type == AST_LITERAL && arg0->data.literal.is_float) {
+                    snprintf(tmp, sizeof(tmp), "%g", arg0->data.literal.value.float_value);
+                    return mc_emit_comp_bytes_immediate(ctx, (const uint8_t *)tmp, strlen(tmp));
+                }
+                if (arg0->type == AST_LITERAL && !arg0->data.literal.is_string) {
+                    snprintf(tmp, sizeof(tmp), "%lld", (long long)arg0->data.literal.value.int_value);
+                    return mc_emit_comp_bytes_immediate(ctx, (const uint8_t *)tmp, strlen(tmp));
+                }
+                return -1;
+            }
+
+            /* 内置 vga/font/write8x16(code,r0..r7): ROM VGA 字体写入（plane 2 @ A0000）。 */
+            if (expr->data.call.func && expr->data.call.func->type == AST_IDENT &&
+                strcmp(expr->data.call.func->data.ident.name, "vga/font/write8x16") == 0) {
+                uint64_t imm;
+                uint8_t a[9];
+                int k;
+                if (ctx->target_format != 8 || ctx->machine_bits != 16) return -1;
+                if (expr->data.call.arg_count != 9 || !expr->data.call.args) return -1;
+                for (k = 0; k < 9; k++) {
+                    if (!expr->data.call.args[k]) return -1;
+                    if (mc_eval_const_expr(ctx, expr->data.call.args[k], &imm) != 0) return -1;
+                    if (imm > 0xFFu) return -1;
+                    a[k] = (uint8_t)imm;
+                }
+                return mc_emit_vga_font_write8x16(ctx, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
             }
             
             /* 普通函数调用 */
@@ -4451,6 +4959,10 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
             /* @gate(type: \naked) - 完全无序言/后续 */
             needs_prologue_epilogue = 0;
         } 
+        else if (strcmp(gate_type, "rom") == 0) {
+            /* @gate(type: \rom) - ROM固件入口，无序言/后续 */
+            needs_prologue_epilogue = 0;
+        }
         else if (strcmp(gate_type, "syscall") == 0) {
             /* @gate(type: \syscall) - 系统调用入口
              * 无标准序言，保留参数寄存器作为系统调用参数
@@ -4478,25 +4990,59 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
             needs_prologue_epilogue = 1;  /* 保持标准序言 */
         }
     }
+    if (ctx->target_format == FORMAT_ROM && ctx->machine_bits == 16 && strcmp(name, "rom/entry") == 0) {
+        needs_prologue_epilogue = 0;
+    }
     
     /* 生成函数序言 */
     if (needs_prologue_epilogue) {
-        /* 标准 x86-64 函数序言：push rbp; mov rbp, rsp */
-        if (mc_emit_u8(&ctx->code, 0x55) != 0) return -1;         /* push rbp */
-        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;         /* REX.W */
-        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;         /* mov */
-        if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;         /* rbp, rsp */
-        if (ctx->planned_local_bytes > 0) {
-            if (ctx->planned_local_bytes <= 127) {
-                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm8 */
-                if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1;
-                if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
-                if (mc_emit_u8(&ctx->code, (uint8_t)ctx->planned_local_bytes) != 0) return -1;
-            } else {
-                if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm32 */
-                if (mc_emit_u8(&ctx->code, 0x81) != 0) return -1;
-                if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
-                if (mc_emit_u32(&ctx->code, (uint32_t)ctx->planned_local_bytes) != 0) return -1;
+        if (ctx->machine_bits == 16) {
+            if (mc_emit_u8(&ctx->code, 0x55) != 0) return -1;         /* push bp */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;         /* mov bp, sp */
+            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;
+            if (ctx->planned_local_bytes > 0) {
+                if (ctx->planned_local_bytes <= 127) {
+                    if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1; /* sub sp, imm8 */
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, (uint8_t)ctx->planned_local_bytes) != 0) return -1;
+                } else {
+                    if (mc_emit_u8(&ctx->code, 0x81) != 0) return -1; /* sub sp, imm16 */
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u16(&ctx->code, (uint16_t)ctx->planned_local_bytes) != 0) return -1;
+                }
+            }
+        } else if (ctx->machine_bits == 32) {
+            if (mc_emit_u8(&ctx->code, 0x55) != 0) return -1;         /* push ebp */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;         /* mov ebp, esp */
+            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;
+            if (ctx->planned_local_bytes > 0) {
+                if (ctx->planned_local_bytes <= 127) {
+                    if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1; /* sub esp, imm8 */
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, (uint8_t)ctx->planned_local_bytes) != 0) return -1;
+                } else {
+                    if (mc_emit_u8(&ctx->code, 0x81) != 0) return -1; /* sub esp, imm32 */
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u32(&ctx->code, (uint32_t)ctx->planned_local_bytes) != 0) return -1;
+                }
+            }
+        } else {
+            if (mc_emit_u8(&ctx->code, 0x55) != 0) return -1;         /* push rbp */
+            if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;         /* REX.W */
+            if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;         /* mov */
+            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1;         /* rbp, rsp */
+            if (ctx->planned_local_bytes > 0) {
+                if (ctx->planned_local_bytes <= 127) {
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm8 */
+                    if (mc_emit_u8(&ctx->code, 0x83) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, (uint8_t)ctx->planned_local_bytes) != 0) return -1;
+                } else {
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* sub rsp, imm32 */
+                    if (mc_emit_u8(&ctx->code, 0x81) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
+                    if (mc_emit_u32(&ctx->code, (uint32_t)ctx->planned_local_bytes) != 0) return -1;
+                }
             }
         }
     }
@@ -4545,6 +5091,9 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
             if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
             if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
             if (mc_emit_u8(&ctx->code, 0x07) != 0) return -1;
+        }
+        else if (gate_type && strcmp(gate_type, "rom") == 0) {
+            /* ROM入口：无自动返回 */
         } 
         else if (needs_prologue_epilogue) {
             /* 标准函数后续：mov rax, 0; leave; ret */
@@ -4578,18 +5127,20 @@ static int mc_emit_function(McCtx *ctx, ASTNode *decl) {
     return 0;
 }
 
+/* ---------------- 替换开始 ---------------- */
 static uint32_t mc_find_or_add_extern_symbol(AETBGenerator *aetb, const char *name) {
     uint32_t i;
     if (!aetb || !name) return 0;
     for (i = 0; i < aetb->symbol_count; i++) {
         AETBSymbol *sym = &aetb->symbols[i];
-        if (sym->name_offset + sym->name_length < aetb->string_pool_size &&
-            strcmp((const char *)&aetb->string_pool[sym->name_offset], name) == 0) {
+        if (sym->name_offset + sym->name_length < aetb->strtab_size &&
+            strcmp((const char *)&aetb->strtab[sym->name_offset], name) == 0) {
             return i;
         }
     }
     return aetb_gen_add_symbol(aetb, name, 1, 2, 0, 0, 0);
 }
+/* ---------------- 替换结束 ---------------- */
 
 static int mc_resolve_calls(McCtx *ctx) {
     size_t i;
@@ -4656,6 +5207,8 @@ static void mc_ctx_free(McCtx *ctx) {
     size_t i;
     if (!ctx) return;
     free(ctx->code.data);
+    free(ctx->truth.data);        /* 新增：释放真理缓冲区 */
+    free(ctx->truth_fixups);      /* 新增：释放修复表 */
     for (i = 0; i < ctx->func_count; i++) free(ctx->funcs[i].name);
     for (i = 0; i < ctx->call_count; i++) free(ctx->calls[i].target_name);
     free(ctx->funcs);
@@ -4747,8 +5300,8 @@ void codegen_destroy(CodeGenerator *gen) {
     free(gen);
 }
 
+/* ---------------- 替换开始 ---------------- */
 int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
-    /* 创建 AETB 生成器 */
     AETBGenerator *aetb = aetb_gen_create(gen->output, 2, 1);
     McCtx mc;
     int i;
@@ -4778,19 +5331,16 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
     mc.target_format = gen->target_format;
     mc.current_func_is_efi = 0;
     
-    /* 如果没有AST（parse error）或AST不是program，生成最小化的AETB二进制 */
     if (!ast || ast->type != AST_PROGRAM) {
-        /* 生成最小化的AETB：只有header + 空code/data */
         if (aetb_gen_finalize(aetb) != 0) {
             strcpy(gen->error, "Failed to finalize minimal AETB binary");
             aetb_gen_destroy(aetb);
             return 1;
         }
         aetb_gen_destroy(aetb);
-        return 0;  /* 成功生成了最小化的二进制 */
+        return 0;
     }
     
-    /* 先处理 extern 声明（导入符号） */
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         if (!decl) continue;
@@ -4799,7 +5349,6 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         }
     }
 
-    /* 收集可折叠的顶层常量，供硬件路径/端口常量等表达式读取 */
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         if (!decl || decl->type != AST_STRUCT_DECL) continue;
@@ -4811,7 +5360,6 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         }
     }
 
-    /* 收集可折叠的顶层常量，供硬件路径/端口常量等表达式读取 */
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         uint64_t const_value = 0;
@@ -4831,8 +5379,11 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         }
     }
 
-    /* [TODO-06] 第一步：识别@entry装饰的函数并记录 */
     int found_entry = 0;
+    if (gen->target_format == FORMAT_ROM &&
+        (gen->entry_point_name == NULL || strlen(gen->entry_point_name) == 0)) {
+        gen->entry_point_name = "rom/entry";
+    }
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         if (!decl || decl->type != AST_FUNC_DECL) continue;
@@ -4840,14 +5391,12 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         if (has_entry_decorator(decl)) {
             found_entry = 1;
             if (gen->entry_point_name == NULL || strlen(gen->entry_point_name) == 0) {
-                /* 如果命令行没有指定 --entry，使用@entry装饰的函数 */
                 gen->entry_point_name = decl->data.func_decl.name;
             }
             break;
         }
     }
 
-    /* 生成真实 x86-64 函数机器码 */
     for (i = 0; i < ast->data.program.decl_count; i++) {
         ASTNode *decl = ast->data.program.declarations[i];
         if (!decl) continue;
@@ -4862,11 +5411,8 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
                 return 1;
             }
             
-            /* [TODO-06] 检查是否为入口点函数 */
             if (decl->data.func_decl.name) {
-                /* 优先级：@entry装饰器 > --entry命令行参数 > EFI特殊名 */
                 if (has_entry_decorator(decl)) {
-                    /* @entry装饰的函数自动成为入口点 */
                     size_t j;
                     for (j = 0; j < mc.func_count; j++) {
                         if (strcmp(mc.funcs[j].name, decl->data.func_decl.name) == 0) {
@@ -4875,7 +5421,6 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
                         }
                     }
                 } else if (gen->entry_point_name && strcmp(gen->entry_point_name, decl->data.func_decl.name) == 0) {
-                    /* 命令行指定的入口点 */
                     size_t j;
                     for (j = 0; j < mc.func_count; j++) {
                         if (strcmp(mc.funcs[j].name, decl->data.func_decl.name) == 0) {
@@ -4889,8 +5434,8 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
             const char *var_name = decl->data.var_decl.name;
             if (var_name) {
                 uint8_t zero8[8] = {0};
-                uint64_t var_off = aetb->data_size;
-                aetb_gen_emit_data(aetb, zero8, sizeof(zero8));
+                uint64_t var_off = aetb->mirror_state_size;
+                aetb_gen_emit_mirror_state(aetb, zero8, sizeof(zero8));
                 aetb_gen_add_symbol(aetb, var_name, 0, 1, 2, var_off, sizeof(zero8));
             }
         }
@@ -4910,7 +5455,26 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         return 1;
     }
 
-    aetb_gen_emit_code(aetb, mc.code.data, (uint32_t)mc.code.size);
+    uint32_t mirror_state_size = aetb->mirror_state_size;
+    for (i = 0; i < (int)mc.truth_fixup_count; i++) {
+        size_t code_off = mc.truth_fixups[i].code_off;
+        size_t truth_off = mc.truth_fixups[i].truth_off;
+        
+        int64_t disp64 = (int64_t)mc.code.size + (int64_t)mirror_state_size + (int64_t)truth_off - ((int64_t)code_off + 4);
+        
+        if (disp64 < INT32_MIN || disp64 > INT32_MAX) {
+            strcpy(gen->error, "RIP-relative offset to ConstantTruth out of 32-bit range");
+            mc_ctx_free(&mc);
+            aetb_gen_destroy(aetb);
+            return 1;
+        }
+        mc_patch_rel32(&mc.code, code_off, (int32_t)disp64);
+    }
+
+    aetb_gen_emit_act_flow(aetb, mc.code.data, (uint32_t)mc.code.size);
+    if (mc.truth.size > 0) {
+        aetb_gen_emit_constant_truth(aetb, mc.truth.data, (uint32_t)mc.truth.size);
+    }
 
     for (i = 0; i < (int)mc.func_count; i++) {
         aetb_gen_add_symbol(aetb,
@@ -4922,10 +5486,18 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
                             mc.funcs[i].size);
     }
 
+    if (mc.entry_point == 0) {
+        for (i = 0; i < (int)mc.func_count; i++) {
+            if (mc.funcs[i].name && strcmp(mc.funcs[i].name, "rom/entry") == 0) {
+                mc.entry_point = mc.funcs[i].offset;
+                break;
+            }
+        }
+    }
+
     aetb_gen_set_entry_point(aetb, mc.entry_point);
     mc_ctx_free(&mc);
     
-    /* 最终化 AETB 二进制输出 */
     if (aetb_gen_finalize(aetb) != 0) {
         strcpy(gen->error, "Failed to finalize AETB binary");
         aetb_gen_destroy(aetb);
@@ -4935,6 +5507,7 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
     aetb_gen_destroy(aetb);
     return 0;
 }
+/* ---------------- 替换结束 ---------------- */
 
 const char* codegen_get_error(CodeGenerator *gen) {
     return gen->error;

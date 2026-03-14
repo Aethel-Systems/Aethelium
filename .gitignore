@@ -35,6 +35,7 @@ aethelc
 *.bak
 *.log
 *.out
+*.bin
 
 # ISO images
 *.iso
@@ -42,6 +43,7 @@ aethelc
 # QEMU outputs
 *.qcow2
 *.img
+*.rom
 
 # Dependencies (if using package managers)
 /vendor/
@@ -63,3 +65,5 @@ __pycache__/
 # OS specific
 .DS_Store
 Thumbs.db
+
+Aethelium.md

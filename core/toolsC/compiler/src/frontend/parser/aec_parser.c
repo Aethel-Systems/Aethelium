@@ -159,6 +159,15 @@ static void* safe_malloc(size_t size) {
     return ptr;
 }
 
+static void* safe_realloc(void *ptr, size_t size) {
+    void *new_ptr = realloc(ptr, size);
+    if (!new_ptr) {
+        fprintf(stderr, "Error: out of memory\n");
+        exit(1);
+    }
+    return new_ptr;
+}
+
 static char* safe_strdup(const char *str) {
     if (!str) return NULL;
     size_t len = strlen(str);
@@ -4934,7 +4943,8 @@ static ASTNode* parse_statement(Parser *parser) {
             /* hardware { ... } 块 */
             ASTNode *node = ast_create_node(AST_HW_BLOCK);
             node->data.hw_block.gate_type = NULL;
-            node->data.hw_block.statements = (ASTNode**)safe_malloc(sizeof(ASTNode*) * 64);
+            int hw_stmt_cap = 64;
+            node->data.hw_block.statements = (ASTNode**)safe_malloc(sizeof(ASTNode*) * (size_t)hw_stmt_cap);
             node->data.hw_block.stmt_count = 0;
             
             if (!match(parser, TK_LBRACE)) {
@@ -4952,7 +4962,14 @@ static ASTNode* parse_statement(Parser *parser) {
                 int pos_before = parser->pos;
                 ASTNode *stmt = parse_statement(parser);
                 
-                if (stmt && node->data.hw_block.stmt_count < 64) {
+                if (stmt) {
+                    if (node->data.hw_block.stmt_count >= hw_stmt_cap) {
+                        hw_stmt_cap *= 2;
+                        node->data.hw_block.statements = (ASTNode**)safe_realloc(
+                            node->data.hw_block.statements,
+                            sizeof(ASTNode*) * (size_t)hw_stmt_cap
+                        );
+                    }
                     node->data.hw_block.statements[node->data.hw_block.stmt_count++] = stmt;
                 } else if (pos_before == parser->pos) {
                     /* 如果parse_statement没有推进位置，强制跳过当前token */

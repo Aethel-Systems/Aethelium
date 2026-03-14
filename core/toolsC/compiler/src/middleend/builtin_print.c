@@ -30,6 +30,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdint.h>
+#include <stddef.h>
 
 /* ============================================================================
  * 辅助函数：检测和验证
@@ -49,6 +50,38 @@ int is_print_function_call(ASTNode *call_expr) {
         }
     }
     
+    return 0;
+}
+
+int is_comp_function_call(ASTNode *call_expr) {
+    if (!call_expr || call_expr->type != AST_CALL) {
+        return 0;
+    }
+
+    ASTNode *func = call_expr->data.call.func;
+    if (func && func->type == AST_IDENT) {
+        const char *name = func->data.ident.name;
+        if (name && (strcmp(name, "comp") == 0 || strncmp(name, "comp/", 5) == 0)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int validate_comp_syntax(ASTNode *call_expr) {
+    if (!call_expr || call_expr->type != AST_CALL) {
+        fprintf(stderr, "[BUILTIN] Error: Expected AST_CALL node\n");
+        return -1;
+    }
+
+    if (call_expr->data.call.arg_count == 0) {
+        fprintf(stderr, "[BUILTIN] Error: comp() requires at least one argument\n");
+        return -1;
+    }
+    if (call_expr->data.call.arg_count > 1) {
+        fprintf(stderr, "[BUILTIN] Error: comp() accepts exactly one argument\n");
+        return -1;
+    }
     return 0;
 }
 
@@ -459,10 +492,27 @@ int codegen_print_call(PrintCompileContext *ctx, ASTNode *call, CodeGenerator *g
     case 5:  /* FORMAT_LET */
         return codegen_print_raw_metal(ctx, arg, gen);
         
+    case 8:  /* FORMAT_ROM */
+        return codegen_print_rom_real(ctx, arg, gen);
+        
     default:
         fprintf(stderr, "[BUILTIN] Error: Unknown target format %d\n", ctx->target_format);
         return -1;
     }
+}
+
+int codegen_comp_call(PrintCompileContext *ctx, ASTNode *call, CodeGenerator *gen) {
+    if (!ctx || !call || !gen || validate_comp_syntax(call) != 0) {
+        return -1;
+    }
+
+    ASTNode *arg = call->data.call.args[0];
+
+    if (ctx->target_format != 8) { /* FORMAT_ROM */
+        fprintf(stderr, "[BUILTIN] Error: comp() is only supported for ROM output\n");
+        return -1;
+    }
+    return codegen_comp_rom_serial(ctx, arg, gen);
 }
 
 /* ============================================================================
@@ -990,6 +1040,167 @@ int codegen_print_raw_metal(PrintCompileContext *ctx, ASTNode *arg, CodeGenerato
         free(encoded_str);
     }
     
+    return 0;
+}
+
+/* ============================================================================
+ * 路径4：ROM固件 print()（VGA显存 + COM1）
+ * ============================================================================ */
+
+static int rom_emit_u8(FILE *out, uint8_t v) {
+    return (fwrite(&v, 1, 1, out) == 1) ? 0 : -1;
+}
+
+static int rom_emit_u16(FILE *out, uint16_t v) {
+    return (fwrite(&v, 1, sizeof(v), out) == sizeof(v)) ? 0 : -1;
+}
+
+static int rom_emit_u32(FILE *out, uint32_t v) {
+    return (fwrite(&v, 1, sizeof(v), out) == sizeof(v)) ? 0 : -1;
+}
+
+static int rom_emit_mov_edx_imm(FILE *out, uint16_t port) {
+    if (rom_emit_u8(out, 0xBA) != 0) return -1;
+    return rom_emit_u32(out, (uint32_t)port);
+}
+
+static int rom_emit_com1_putchar(FILE *out, int machine_bits, uint8_t ch) {
+    if (!out) return -1;
+    if (machine_bits == 16) {
+        /* mov dx,0x3FD; in al,dx; test al,0x20; jz -5; mov dx,0x3F8; mov al,ch; out dx,al */
+        if (rom_emit_u8(out, 0xBA) != 0 || rom_emit_u16(out, 0x03FDu) != 0) return -1;
+        if (rom_emit_u8(out, 0xEC) != 0) return -1;                 /* in al,dx */
+        if (rom_emit_u8(out, 0xA8) != 0 || rom_emit_u8(out, 0x20) != 0) return -1; /* test al,0x20 */
+        if (rom_emit_u8(out, 0x74) != 0 || rom_emit_u8(out, 0xFB) != 0) return -1; /* jz back */
+        if (rom_emit_u8(out, 0xBA) != 0 || rom_emit_u16(out, 0x03F8u) != 0) return -1;
+        if (rom_emit_u8(out, 0xB0) != 0 || rom_emit_u8(out, ch) != 0) return -1;
+        return rom_emit_u8(out, 0xEE);
+    }
+
+    if (machine_bits == 32 || machine_bits == 64) {
+        if (rom_emit_mov_edx_imm(out, 0x03FDu) != 0) return -1;      /* mov edx,0x3FD */
+        if (rom_emit_u8(out, 0xEC) != 0) return -1;                  /* in al,dx */
+        if (rom_emit_u8(out, 0xA8) != 0 || rom_emit_u8(out, 0x20) != 0) return -1; /* test al,0x20 */
+        if (rom_emit_u8(out, 0x74) != 0 || rom_emit_u8(out, 0xFB) != 0) return -1; /* jz back */
+        if (rom_emit_mov_edx_imm(out, 0x03F8u) != 0) return -1;      /* mov edx,0x3F8 */
+        if (rom_emit_u8(out, 0xB0) != 0 || rom_emit_u8(out, ch) != 0) return -1; /* mov al,ch */
+        return rom_emit_u8(out, 0xEE);                                /* out dx,al */
+    }
+
+    return -1;
+}
+
+int codegen_print_rom_real(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator *gen) {
+    if (!ctx || !arg || !gen) {
+        fprintf(stderr, "[BUILTIN] Error: Invalid context in codegen_print_rom_real\n");
+        return -1;
+    }
+
+    fprintf(stderr, "[BUILTIN] Generating ROM print() via VGA/COM1\n");
+
+    if (!(arg->type == AST_LITERAL && !arg->data.literal.is_float && arg->data.literal.is_string)) {
+        fprintf(stderr, "[BUILTIN] Error: ROM print() only supports string literals\n");
+        return -1;
+    }
+
+    const char *str_value = arg->data.literal.value.str_value;
+    if (!str_value) {
+        fprintf(stderr, "[BUILTIN] Error: String literal has NULL value\n");
+        return -1;
+    }
+
+    if (gen->output) {
+        if (ctx->machine_bits == 16) {
+            /* ROM print(): VGA-only. No UART/VGA initialization here. */
+            if (rom_emit_u8(gen->output, 0xB8) != 0 || rom_emit_u16(gen->output, 0xB800u) != 0) return -1; /* mov ax,0xB800 */
+            if (rom_emit_u8(gen->output, 0x8E) != 0 || rom_emit_u8(gen->output, 0xC0) != 0) return -1;     /* mov es,ax */
+            if (rom_emit_u8(gen->output, 0x31) != 0 || rom_emit_u8(gen->output, 0xFF) != 0) return -1;     /* xor di,di */
+
+            for (size_t i = 0; str_value[i] != '\0'; i++) {
+                uint8_t ch = (uint8_t)str_value[i];
+                if (ch == '\n') {
+                    if (rom_emit_u8(gen->output, 0x81) != 0 || rom_emit_u8(gen->output, 0xC7) != 0) return -1;
+                    if (rom_emit_u16(gen->output, 160u) != 0) return -1;                                     /* add di,160 */
+                    continue;
+                }
+                if (rom_emit_u8(gen->output, 0xB8) != 0) return -1;                                          /* mov ax,imm16 */
+                if (rom_emit_u16(gen->output, (uint16_t)(0x0700u | (uint16_t)ch)) != 0) return -1;
+                if (rom_emit_u8(gen->output, 0x26) != 0 || rom_emit_u8(gen->output, 0x89) != 0 ||
+                    rom_emit_u8(gen->output, 0x05) != 0) return -1;                                          /* mov es:[di],ax */
+                if (rom_emit_u8(gen->output, 0x83) != 0 || rom_emit_u8(gen->output, 0xC7) != 0 ||
+                    rom_emit_u8(gen->output, 0x02) != 0) return -1;                                          /* add di,2 */
+            }
+        } else if (ctx->machine_bits == 32 || ctx->machine_bits == 64) {
+            /* mov edi, 0x000B8000 */
+            {
+                uint8_t prefix[5];
+                uint32_t vga = 0x000B8000u;
+                prefix[0] = 0xBF;
+                memcpy(&prefix[1], &vga, sizeof(vga));
+                if (fwrite(prefix, 1, sizeof(prefix), gen->output) != sizeof(prefix)) {
+                    fprintf(stderr, "[BUILTIN] Error: Failed to write ROM VGA pointer prefix\n");
+                    return -1;
+                }
+            }
+
+            for (size_t i = 0; str_value[i] != '\0'; i++) {
+                uint8_t ch = (uint8_t)str_value[i];
+                uint8_t seq[16];
+                size_t n = 0;
+                seq[n++] = 0x66; seq[n++] = 0xB8;
+                {
+                    uint16_t axv = (uint16_t)(0x0700u | (uint16_t)ch);
+                    seq[n++] = (uint8_t)(axv & 0xFF);
+                    seq[n++] = (uint8_t)((axv >> 8) & 0xFF);
+                }
+                seq[n++] = 0x66; seq[n++] = 0x89; seq[n++] = 0x07; /* mov [edi/rdi], ax */
+                seq[n++] = 0x81; seq[n++] = 0xC7;
+                if (ch == '\n') {
+                    uint32_t adv = 160u;
+                    seq[n++] = (uint8_t)(adv & 0xFF);
+                    seq[n++] = (uint8_t)((adv >> 8) & 0xFF);
+                    seq[n++] = (uint8_t)((adv >> 16) & 0xFF);
+                    seq[n++] = (uint8_t)((adv >> 24) & 0xFF);
+                } else {
+                    seq[n++] = 0x02; seq[n++] = 0x00; seq[n++] = 0x00; seq[n++] = 0x00;
+                }
+                if (fwrite(seq, 1, n, gen->output) != n) {
+                    fprintf(stderr, "[BUILTIN] Error: Failed to write ROM output code\n");
+                    return -1;
+                }
+            }
+        } else {
+            fprintf(stderr, "[BUILTIN] Error: ROM print requires 16/32/64-bit output\n");
+            return -1;
+        }
+    }
+    return 0;
+}
+
+int codegen_comp_rom_serial(PrintCompileContext *ctx, ASTNode *arg, CodeGenerator *gen) {
+    if (!ctx || !arg || !gen || !gen->output) {
+        fprintf(stderr, "[BUILTIN] Error: Invalid context in codegen_comp_rom_serial\n");
+        return -1;
+    }
+
+    if (!(arg->type == AST_LITERAL && !arg->data.literal.is_float && arg->data.literal.is_string)) {
+        fprintf(stderr, "[BUILTIN] Error: comp() only supports string literals in ROM\n");
+        return -1;
+    }
+
+    const char *str_value = arg->data.literal.value.str_value;
+    if (!str_value) {
+        fprintf(stderr, "[BUILTIN] Error: String literal has NULL value\n");
+        return -1;
+    }
+
+    for (size_t i = 0; str_value[i] != '\0'; i++) {
+        uint8_t ch = (uint8_t)str_value[i];
+        if (rom_emit_com1_putchar(gen->output, ctx->machine_bits, ch) != 0) {
+            fprintf(stderr, "[BUILTIN] Error: Failed to emit COM1 output byte\n");
+            return -1;
+        }
+    }
     return 0;
 }
 

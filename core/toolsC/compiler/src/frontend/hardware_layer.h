@@ -120,6 +120,7 @@ typedef enum {
     GATE_TYPE_EFI,          /* @gate(type: \efi) UEFI应用入口 */
     GATE_TYPE_NAKED,        /* @gate(type: \naked) 裸体函数（无栈帧） */
     GATE_TYPE_EXCEPTION,    /* @gate(type: \exception) 异常处理 */
+    GATE_TYPE_ROM,          /* @gate(type: \rom) ROM固件入口 */
 } GateType;
 
 typedef struct {

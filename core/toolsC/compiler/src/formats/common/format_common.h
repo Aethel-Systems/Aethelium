@@ -61,6 +61,7 @@
 #define MAGIC_AETB              0x42544541  /* "AETB" as uint32_t host read value */
 #define MAGIC_IYA               0x41594921  /* "IYA!" */
 #define MAGIC_AX                0x21584541  /* "AEX!" - AX format */
+#define MAGIC_ROM               0x214D4F52  /* "ROM!" */
 
 /* 版本号 */
 #define FORMAT_VERSION_V1       1

@@ -135,6 +135,7 @@ func kernel/init(boot/info: ptr<BootInfo>): Void {
     *   `@gate(type: \syscall)`: Automatically handles `sysretq`.
     *   `@gate(type: \efi)`: Follows the Microsoft x64 ABI (for UEFI).
     *   `@gate(type: \naked)`: Generates no prologue or epilogue.
+    *   `@gate(type: \rom)`: ROM firmware entry, no automatic prologue/epilogue.
 
 ---
 

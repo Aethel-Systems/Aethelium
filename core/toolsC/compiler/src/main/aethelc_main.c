@@ -89,6 +89,7 @@
 #define FORMAT_LET  5
 #define FORMAT_BIN  6
 #define FORMAT_PE   7        /* UEFI PE32+ 工业级应用（新增） */
+#define FORMAT_ROM  8        /* ROM 固件镜像（可直接刷写） */
 
 static int create_temp_file_path(char *path_out, size_t path_out_sz, const char *prefix) {
     if (!path_out || path_out_sz == 0 || !prefix) {
@@ -468,7 +469,7 @@ typedef struct {
     int optimize_level;
     int verbose;
     int debug;                /* 新增：--debug 标志 */
-    const char *output_format;  /* "aetb", "let", "aki", "hda", "srv", "efi", "bin" */
+    const char *output_format;  /* "aetb", "let", "aki", "hda", "srv", "efi", "bin", "rom" */
     const char *target_mode;    /* "application" or "kernel" */
     const char *emit_format;    /* --emit override */
     int machine_bits;           /* 16/32/64 */
@@ -498,6 +499,10 @@ typedef struct {
     int static_only;            /* --static-only: 仅静态链接 */
     int static_complete;        /* --static-complete: 静态链接完整性 */
     int app_package;            /* --app-package: 应用包格式（IYA） */
+    /* ROM 镜像选项 */
+    int rom_mode;               /* --rom: 生成ROM镜像 */
+    uint64_t rom_size_bytes;    /* --side <size> (default 8MB) */
+    uint8_t rom_fill_byte;      /* ROM填充字节 (默认0xFF) */
     /* 新增：库包含支持 (for library source inlining) */
     char *include_libs[32];     /* 库名称列表（如 "std", "auraui"） */
     int include_lib_count;      /* 包含库的数量 */
@@ -513,6 +518,40 @@ static int parse_u64(const char *text, uint64_t *out) {
     return 0;
 }
 
+static int parse_rom_size_bytes(const char *text, uint64_t *out_bytes) {
+    char buf[64];
+    char *endp = NULL;
+    double value;
+    size_t len;
+    if (!text || !out_bytes) return -1;
+    len = strlen(text);
+    if (len == 0 || len >= sizeof(buf)) return -1;
+    snprintf(buf, sizeof(buf), "%s", text);
+    for (size_t i = 0; i < len; i++) {
+        buf[i] = (char)tolower((unsigned char)buf[i]);
+    }
+    value = strtod(buf, &endp);
+    if (!endp || endp == buf) return -1;
+    while (*endp && isspace((unsigned char)*endp)) endp++;
+    if (*endp == '\0') {
+        *out_bytes = (uint64_t)(value * 1024.0 * 1024.0);
+        return 0;
+    }
+    if (strcmp(endp, "k") == 0 || strcmp(endp, "kb") == 0) {
+        *out_bytes = (uint64_t)(value * 1024.0);
+        return 0;
+    }
+    if (strcmp(endp, "m") == 0 || strcmp(endp, "mb") == 0) {
+        *out_bytes = (uint64_t)(value * 1024.0 * 1024.0);
+        return 0;
+    }
+    if (strcmp(endp, "g") == 0 || strcmp(endp, "gb") == 0) {
+        *out_bytes = (uint64_t)(value * 1024.0 * 1024.0 * 1024.0);
+        return 0;
+    }
+    return -1;
+}
+
 static void print_usage(const char *prog) {
     fprintf(stderr, "AethelOS Bootstrap Compiler (Stage 1) v2.0.0\n");
     fprintf(stderr, "Usage:\n");
@@ -521,7 +560,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  Dump:    %s --dump-reloc-dna <input.let> [-o <output.txt>]\n", prog);
     fprintf(stderr, "  ISO:     %s --iso -o <output.iso> --kernel <kernel> --efi <boot.efi> [--size <MB>]\n", prog);
     fprintf(stderr, "\nOutput Formats:\n");
-    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|bin\n");
+    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|bin|rom\n");
     fprintf(stderr, "\nCompiler Architecture:\n");
     fprintf(stderr, "  .ae -> AETB         Direct compile path for application runtime binaries\n");
     fprintf(stderr, "  .ae -> LET          Logical Embryo (the only intermediate format)\n");
@@ -543,6 +582,9 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  --kernel <file>      Kernel file to embed\n");
     fprintf(stderr, "  --efi <file>         EFI boot file\n");
     fprintf(stderr, "  --size <MB>          ISO size in MB (default: 512)\n");
+    fprintf(stderr, "\nROM Generation Options:\n");
+    fprintf(stderr, "  --rom                Generate flashable ROM image (.rom)\n");
+    fprintf(stderr, "  --side <size>        ROM size (default: 8MB). Supports KB/MB/GB; no suffix means MB\n");
     fprintf(stderr, "\nCompilation Flags:\n");
     fprintf(stderr, "  --freestanding       Freestanding mode (no libc dependencies)\n");
     fprintf(stderr, "  --no-stack-check     Disable stack checking\n");
@@ -580,6 +622,8 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "    aethelc kernel.ae -o kernel.aki --emit aki --target kernel\n");
     fprintf(stderr, "\n  Compile to UEFI bootloader:\n");
     fprintf(stderr, "    aethelc bootloader.ae -o BOOTX64.EFI --emit efi\n");
+    fprintf(stderr, "\n  Compile to ROM firmware image:\n");
+    fprintf(stderr, "    aethelc firmware.ae -o firmware.rom --rom --side 16MB\n");
     fprintf(stderr, "\n  Generate ISO image:\n");
     fprintf(stderr, "    aethelc --iso -o output.iso --kernel kernel.aki --efi BOOTX64.EFI --size 512\n");
     fprintf(stderr, "\n  Compile with debug output:\n");
@@ -631,6 +675,9 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     opts->static_only = 0;
     opts->static_complete = 0;
     opts->app_package = 0;
+    opts->rom_mode = 0;
+    opts->rom_size_bytes = 8ULL * 1024ULL * 1024ULL;
+    opts->rom_fill_byte = 0xFF;
     /* 库包含初始化 */
     opts->include_lib_count = 0;
     memset(opts->include_libs, 0, sizeof(opts->include_libs));
@@ -644,6 +691,10 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             opts->verbose = 1;
         } else if (strcmp(argv[i], "--iso") == 0) {
             opts->is_iso_mode = 1;
+        } else if (strcmp(argv[i], "--rom") == 0) {
+            opts->rom_mode = 1;
+            opts->output_format = "rom";
+            opts->emit_format = "rom";
         } else if (strcmp(argv[i], "--verify-let-contract") == 0) {
             if (i + 1 < argc) {
                 opts->verify_let_mode = 1;
@@ -668,6 +719,15 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             if (i + 1 < argc) opts->efi_boot_file = argv[++i];
         } else if (strcmp(argv[i], "--size") == 0) {
             if (i + 1 < argc) opts->iso_size_mb = atoll(argv[++i]);
+        } else if (strcmp(argv[i], "--side") == 0 || strcmp(argv[i], "--rom-size") == 0) {
+            if (i + 1 < argc) {
+                uint64_t bytes = 0;
+                if (parse_rom_size_bytes(argv[++i], &bytes) != 0 || bytes == 0) {
+                    fprintf(stderr, "Error: --side expects size like 8MB/16MB/512KB\n");
+                    return 1;
+                }
+                opts->rom_size_bytes = bytes;
+            }
         } else if (strcmp(argv[i], "--entry") == 0) {
             if (i + 1 < argc) opts->entry_point = argv[++i];
         } else if (strcmp(argv[i], "--mode") == 0) {
@@ -677,7 +737,8 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                 const char *fmt = argv[++i];
                 if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
                     strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
-                    strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0) {
+                    strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
+                    strcmp(fmt, "rom") == 0) {
                     opts->output_format = fmt;
                     opts->emit_format = fmt;
                 } else {
@@ -823,6 +884,28 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     }
     if (opts->static_complete) {
         opts->static_only = 1;
+    }
+    if (opts->rom_mode && opts->emit_format && strcmp(opts->emit_format, "rom") != 0) {
+        fprintf(stderr, "Error: --rom cannot be combined with --emit %s\n", opts->emit_format);
+        return 1;
+    }
+    if (opts->rom_mode) {
+        if (!(opts->machine_bits == 16 || opts->machine_bits == 32 || opts->machine_bits == 64)) {
+            fprintf(stderr, "Error: ROM firmware requires --machine-bits 16/32/64\n");
+            return 1;
+        }
+        if (opts->machine_bits == 64 && strcmp(opts->isa, "x86_64") != 0) {
+            fprintf(stderr, "Error: 64-bit ROM firmware requires --isa x86_64\n");
+            return 1;
+        }
+        if ((opts->machine_bits == 16 || opts->machine_bits == 32) && strcmp(opts->isa, "x86") != 0) {
+            fprintf(stderr, "Error: 16/32-bit ROM firmware requires --isa x86\n");
+            return 1;
+        }
+        if (opts->has_bin_entry_offset) {
+            fprintf(stderr, "Error: ROM firmware does not accept --bin-entry (reset vector is fixed)\n");
+            return 1;
+        }
     }
     
     return 0;
@@ -1312,6 +1395,7 @@ static int run_compiler(CompilerOptions *opts) {
         else if (strcmp(opts->emit_format, "efi") == 0 || strcmp(opts->emit_format, "uefi_app") == 0) target_format = FORMAT_EFI;
         else if (strcmp(opts->emit_format, "pe") == 0) target_format = FORMAT_PE;
         else if (strcmp(opts->emit_format, "bin") == 0) target_format = FORMAT_BIN;
+        else if (strcmp(opts->emit_format, "rom") == 0) target_format = FORMAT_ROM;
         else target_format = FORMAT_AETB;
     } else if (strstr(output_file, ".aki") != NULL) {
         target_format = FORMAT_AKI;
@@ -1325,6 +1409,8 @@ static int run_compiler(CompilerOptions *opts) {
         target_format = FORMAT_EFI;
     } else if (strstr(output_file, ".bin") != NULL) {
         target_format = FORMAT_BIN;
+    } else if (strstr(output_file, ".rom") != NULL) {
+        target_format = FORMAT_ROM;
     }
     
     if (opts->verbose) {
@@ -1337,6 +1423,7 @@ static int run_compiler(CompilerOptions *opts) {
             case FORMAT_EFI: fmt_name = "PE32+ EFI (Embedded AETB)"; break;
             case FORMAT_PE: fmt_name = "PE32+ (Industrial Grade UEFI)"; break;
             case FORMAT_BIN: fmt_name = "BIN"; break;
+            case FORMAT_ROM: fmt_name = "ROM (Flash Image)"; break;
         }
         printf("[INFO] 目标格式: %s\n", fmt_name);
     }
@@ -1346,7 +1433,8 @@ static int run_compiler(CompilerOptions *opts) {
          target_format == FORMAT_AKI ||
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
-         target_format == FORMAT_BIN) &&
+         target_format == FORMAT_BIN ||
+         target_format == FORMAT_ROM) &&
         strcmp(opts->mode, "architect") != 0) {
         effective_mode = "architect";
         if (opts->verbose) {
@@ -1358,7 +1446,8 @@ static int run_compiler(CompilerOptions *opts) {
          target_format == FORMAT_AKI ||
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
-         target_format == FORMAT_BIN) &&
+         target_format == FORMAT_BIN ||
+         target_format == FORMAT_ROM) &&
         strcmp(opts->target_mode, "kernel") != 0) {
         effective_target_mode = "kernel";
         if (opts->verbose) {
@@ -1407,6 +1496,8 @@ static int run_compiler(CompilerOptions *opts) {
     let_weave_opts.bin_with_map = opts->bin_with_map;
     let_weave_opts.has_bin_entry_offset = opts->has_bin_entry_offset;
     let_weave_opts.bin_entry_offset = (unsigned long long)opts->bin_entry_offset;
+    let_weave_opts.rom_size_bytes = (unsigned long long)opts->rom_size_bytes;
+    let_weave_opts.rom_fill_byte = opts->rom_fill_byte;
 
     if (opts->input_count == 1 &&
         strstr(opts->input_files[0], ".let") != NULL &&
@@ -1419,6 +1510,7 @@ static int run_compiler(CompilerOptions *opts) {
             case FORMAT_HDA: weave_target = LET_WEAVE_TARGET_HDA; break;
             case FORMAT_AETB: weave_target = LET_WEAVE_TARGET_AETB; break;
             case FORMAT_BIN: weave_target = LET_WEAVE_TARGET_BIN; break;
+            case FORMAT_ROM: weave_target = LET_WEAVE_TARGET_ROM; break;
             default: weave_target = 0; break;
         }
         if (weave_target == 0) {
@@ -1457,7 +1549,8 @@ static int run_compiler(CompilerOptions *opts) {
     gen->target_format = target_format;
     gen->use_uefi = (target_format == FORMAT_EFI || target_format == FORMAT_PE);
     gen->use_syscall = (target_format == FORMAT_AETB || target_format == FORMAT_AKI || 
-                        target_format == FORMAT_SRV || target_format == FORMAT_HDA);
+                        target_format == FORMAT_SRV || target_format == FORMAT_HDA ||
+                        target_format == FORMAT_ROM);
     
     if (codegen_set_target(gen, opts->isa, opts->machine_bits) != 0) {
         fprintf(stderr, "Error: unsupported Stage1 target combination: isa=%s bits=%d\n", opts->isa, opts->machine_bits);
@@ -1487,6 +1580,25 @@ static int run_compiler(CompilerOptions *opts) {
         if (!source) {
             codegen_destroy(gen);
             return 1;
+        }
+
+        if (target_format == FORMAT_ROM) {
+            char **rom_asm_lines = NULL;
+            size_t rom_asm_count = 0;
+            if (extract_asm_strings_from_source(source, &rom_asm_lines, &rom_asm_count) != 0) {
+                free(source);
+                codegen_destroy(gen);
+                return 1;
+            }
+            if (rom_asm_count > 0) {
+                fprintf(stderr, "Error: ROM build forbids asm blocks; use hardware/primal layer instead (%s)\n",
+                        opts->input_files[file_idx]);
+                free_asm_lines(rom_asm_lines, rom_asm_count);
+                free(source);
+                codegen_destroy(gen);
+                return 1;
+            }
+            free_asm_lines(rom_asm_lines, rom_asm_count);
         }
         
         /* [TODO-03] 预处理阶段：检查禁忌头文件 */
@@ -1680,6 +1792,7 @@ static int run_compiler(CompilerOptions *opts) {
     const uint8_t *code = NULL, *mirror_data = NULL, *constant_data = NULL;
     size_t code_size = 0, mirror_size = 0, constant_size = 0;
     uint32_t entry_offset = 0;  /* PE格式所需的EFI入口点偏移 */
+    uint64_t rom_entry_offset = 0;
     
     if (extract_zones_from_binary(binary_data, binary_size, 
                                  &code, &code_size,
@@ -1694,8 +1807,6 @@ static int run_compiler(CompilerOptions *opts) {
     if (target_format == FORMAT_PE) {
         /* 从binary_data header中提取entry point offset */
         if (binary_size >= sizeof(AethelBinaryHeader)) {
-            AethelBinaryHeader *hdr = (AethelBinaryHeader *)binary_data;
-            
             /* 对于bootloader，entry point通常从act_flow_offset的第一条指令开始 */
             /* 但如果提供了显式的entry offset，使用它 */
             if (opts->has_bin_entry_offset) {
@@ -1705,10 +1816,17 @@ static int run_compiler(CompilerOptions *opts) {
                  * 这是标准UEFI EFI_IMAGE_ENTRY_POINT的位置 */
                 entry_offset = 0;
             }
-            
             if (opts->verbose) {
                 fprintf(stderr, "[PE-IND] Entry point offset will be: 0x%x\n", entry_offset);
             }
+        }
+    }
+
+    if (target_format == FORMAT_ROM) {
+        rom_entry_offset = 0;
+        if (binary_size >= sizeof(AethelBinaryHeader)) {
+            const AethelBinaryHeader *hdr = (const AethelBinaryHeader *)binary_data;
+            rom_entry_offset = hdr->genesis_point;
         }
     }
     
@@ -1718,7 +1836,7 @@ static int run_compiler(CompilerOptions *opts) {
         }
         format_result = aki_generate_image(output_file, code, code_size, 
                                           mirror_data, mirror_size, 
-                                          constant_data, constant_size);
+                                          constant_data, constant_size, 0xFFFFF1B779CD1910ULL);
     }
     else if (target_format == FORMAT_LET) {
         if (opts->verbose) {
@@ -1759,6 +1877,23 @@ static int run_compiler(CompilerOptions *opts) {
                                                 &let_weave_opts);
         }
         unlink(let_tmp);
+    }
+    else if (target_format == FORMAT_ROM) {
+        if (opts->verbose) {
+            printf("[INFO] 生成 ROM 固件镜像: %s (size=%llu bytes)\n",
+                   output_file,
+                   (unsigned long long)opts->rom_size_bytes);
+        }
+        format_result = rom_generate_image(output_file,
+                                           code, code_size,
+                                           mirror_data, mirror_size,
+                                           constant_data, constant_size,
+                                           rom_entry_offset,
+                                           (uint16_t)opts->machine_bits,
+                                           (uint16_t)map_isa_to_contract(opts->isa, opts->machine_bits),
+                                           NULL,
+                                           opts->rom_size_bytes,
+                                           opts->rom_fill_byte);
     }
     else if (target_format == FORMAT_SRV) {
         if (opts->verbose) {
