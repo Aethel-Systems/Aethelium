@@ -147,9 +147,9 @@ _write_aki_binary:
     mov r10, rax                ; r10 = file descriptor
     
     ; ========================================================================
-    ; Write data: write(fd, buffer, size)
+    ; Write data: write(stream_port, buffer, size)
     ; ========================================================================
-    mov rdi, r10                ; arg1 = fd
+    mov rdi, r10                ; arg1 = stream_port
     mov rsi, r13                ; arg2 = buffer
     mov rdx, r8                 ; arg3 = size
     call _syscall_write
@@ -157,7 +157,7 @@ _write_aki_binary:
     mov r11, rax                ; r11 = bytes written
     
     ; ========================================================================
-    ; Close file: close(fd)
+    ; Close file: close(stream_port)
     ; ========================================================================
     mov rdi, r10
     call _syscall_close
@@ -435,9 +435,9 @@ _write_pe32plus_efi:
     mov r14, rax                ; r14 = file descriptor
     
     ; ========================================================================
-    ; 写入数据: write(fd, PE buffer, total_size)
+    ; 写入数据: write(stream_port, PE buffer, total_size)
     ; ========================================================================
-    mov rdi, r14                ; arg1 = fd
+    mov rdi, r14                ; arg1 = stream_port
     mov rsi, r13                ; arg2 = PE buffer
     mov rdx, r8                 ; arg3 = size
     call _syscall_write
@@ -445,7 +445,7 @@ _write_pe32plus_efi:
     mov r10, rax                ; r10 = bytes written
     
     ; ========================================================================
-    ; 关闭文件: close(fd)
+    ; 关闭文件: close(stream_port)
     ; ========================================================================
     mov rdi, r14
     call _syscall_close

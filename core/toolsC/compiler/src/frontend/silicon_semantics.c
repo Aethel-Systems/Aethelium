@@ -70,7 +70,7 @@ int silicon_check_rimport_context(void) {
 
 /**
  * 解析MSR地址从名称
- * 支持: MSR/EFER, MSR/STAR, CPU_CR0, CPU_CR3, CPU_CR4
+ * 支持: MSR/EFER, MSR/STAR, CPU_CR0, CPU_CR3/PTCR, CPU_CR4
  */
 static uint64_t parse_msr_address(const char *msr_name) {
     if (strcmp(msr_name, "MSR/EFER") == 0) {
@@ -91,7 +91,14 @@ static uint64_t parse_msr_address(const char *msr_name) {
         return CPU_MSR_KERNEL_GS_BASE;
     } else if (strcmp(msr_name, "CPU/CR0") == 0 || strcmp(msr_name, "CR0") == 0) {
         return CPU_CR0;
-    } else if (strcmp(msr_name, "CPU/CR3") == 0 || strcmp(msr_name, "CR3") == 0) {
+    } else if (strcmp(msr_name, "CPU/CR3") == 0 ||
+               strcmp(msr_name, "CR3") == 0 ||
+               strcmp(msr_name, "PTCR") == 0 ||
+               strcmp(msr_name, "CPU/PTCR") == 0 ||
+               strcmp(msr_name, "CPU/Current\\Control\\CR3") == 0 ||
+               strcmp(msr_name, "CPU/Current\\Control\\PTCR") == 0 ||
+               strcmp(msr_name, "CPU/Current/Control/CR3") == 0 ||
+               strcmp(msr_name, "CPU/Current/Control/PTCR") == 0) {
         return CPU_CR3;
     } else if (strcmp(msr_name, "CPU/CR4") == 0 || strcmp(msr_name, "CR4") == 0) {
         return CPU_CR4;

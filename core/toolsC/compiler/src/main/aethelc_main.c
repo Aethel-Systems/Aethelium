@@ -24,26 +24,28 @@
  * 链接: aethelc --link -o <output> <obj1> <obj2> ... --entry <symbol>
  * ISO:  aethelc --iso -o <output.iso> --kernel <kernel> --efi <boot.efi> [--size <MB>]
  */
-//错误说法：
+//错误说法：{
 /**
- * 从AETB格式中提取纯x86-64机器码
+ * 从AETB格式中提取纯x86-64机器码 -- 错误
  * 
- * AETB是编译器后端的中间格式，有256字节的头部。
- * 此函数将code section（从0x100偏移开始）提取出来。
- * 
- * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。
+ * AETB是编译器后端的中间格式，有256字节的头部。 -- 错误
+ * 此函数将code section（从0x100偏移开始）提取出来。 -- 错误
+ *  -- 错误
+ * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。 -- 错误
  * 
  * 参数：
- *   aetb_data: AETB格式的二进制数据指针
- *   aetb_size: 数据大小
- *   code_out: 输出的机器码指针
- *   code_size_out: 输出的机器码大小
+ *   aetb_data: AETB格式的二进制数据指针 -- 错误
+ *   aetb_size: 数据大小 -- 错误
+ *   code_out: 输出的机器码指针 -- 错误
+ *   code_size_out: 输出的机器码大小 -- 错误
  * 
- * 返回：0 成功，-1 失败
+ * 返回：0 成功，-1 失败  -- 错误
+ * }
  */
-//正确说法：
+//正确说法：{
 /*
- AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁aetb用于中间文件，AethelOS只有.let中间文件
+ AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁用于中间文件，AethelOS在底层也不存在中间文件，更没有这番理念 -- 正确
+ }
 */
 
 #include "aec_lexer.h"
@@ -99,7 +101,7 @@ static int create_temp_file_path(char *path_out, size_t path_out_sz, const char 
     {
         const char *tmp_dir;
         int n;
-        int fd;
+        int temp_handle;
 
         tmp_dir = getenv("TEMP");
         if (!tmp_dir || tmp_dir[0] == '\0') {
@@ -115,12 +117,12 @@ static int create_temp_file_path(char *path_out, size_t path_out_sz, const char 
         if (_mktemp_s(path_out, path_out_sz) != 0) {
             return -1;
         }
-        fd = _open(path_out, _O_RDWR | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
-        if (fd < 0) {
+        temp_handle = _open(path_out, _O_RDWR | _O_CREAT | _O_EXCL | _O_BINARY, _S_IREAD | _S_IWRITE);
+        if (temp_handle < 0) {
             unlink(path_out);
             return -1;
         }
-        return fd;
+        return temp_handle;
     }
 #else
     {
@@ -1167,7 +1169,7 @@ static int compile_inline_asm_to_bin(const char *input_file,
     int switched64 = 0;
     size_t i;
 #ifndef _WIN32
-    pid_t pid;
+    pid_t child_handle;
 #endif
 
     if (!input_file || !output_file) return 0;
@@ -1240,17 +1242,17 @@ static int compile_inline_asm_to_bin(const char *input_file,
         }
     }
 #else
-    pid = fork();
-    if (pid == 0) {
+    child_handle = fork();
+    if (child_handle == 0) {
         execlp("nasm", "nasm", "-f", "bin", "-o", output_file, asm_tmp, (char *)NULL);
         _exit(127);
     }
-    if (pid < 0) {
+    if (child_handle < 0) {
         unlink(asm_tmp);
         free_asm_lines(lines, line_count);
         return -1;
     }
-    if (waitpid(pid, &status, 0) < 0) {
+    if (waitpid(child_handle, &status, 0) < 0) {
         unlink(asm_tmp);
         free_asm_lines(lines, line_count);
         return -1;
@@ -1342,19 +1344,9 @@ static int run_compiler(CompilerOptions *opts) {
     const char *effective_target_mode = opts->target_mode;
     LetEmitOptions let_emit_opts;
     LetWeaveOptions let_weave_opts;
-    int input_is_let_only;
     // 编译模式：支持多个输入文件用于内核构建
     if (opts->input_count == 0) {
         fprintf(stderr, "Error: No input files specified.\n");
-        return 1;
-    }
-    input_is_let_only = (opts->input_count == 1 &&
-                         strstr(opts->input_files[0], ".let") != NULL);
-
-    if (!input_is_let_only &&
-        strcmp(opts->isa, "aarch64") == 0) {
-        fprintf(stderr,
-                "Error: Stage1 codegen currently supports only x86/x86_64 for AE source input\n");
         return 1;
     }
 

@@ -80,21 +80,52 @@ static int validate_identifier(const char *name) {
 static int validate_aethel_path_identifier(const char *name, int require_slash) {
     size_t i;
     int has_slash = 0;
+    int has_alnum = 0;
+    
     if (!name || !name[0]) return 0;
     if (name[0] == '/' || name[strlen(name) - 1] == '/') return 0;
+    
+    /* Parse and validate each character */
     for (i = 0; name[i] != '\0'; i++) {
         char c = name[i];
+        
+        /* Strictly forbid underscore */
         if (c == '_') return 0;
+        
         if (c == '/') {
             has_slash = 1;
+            /* No consecutive slashes or dangling slash */
             if (name[i + 1] == '/' || name[i + 1] == '\0') return 0;
             continue;
         }
-        if (!(isalnum((unsigned char)c) || c == '-')) {
+        
+        /* Allow letters and digits ; hyphens for slash-separated paths */
+        if (isalnum((unsigned char)c)) {
+            has_alnum = 1;
+        } else if (c == '-') {
+            /* Hyphen allowed only in slash-separated paths */
+            if (!has_slash) return 0;
+        } else {
             return 0;
         }
     }
-    if (require_slash && !has_slash) return 0;
+    
+    /* Must have at least one alphanumeric character */
+    if (!has_alnum) return 0;
+    
+    /* For map definitions/fields that require slash:
+     * Allow either slash-separated paths OR camelCase/PascalCase names without slashes.
+     * This supports both styles:
+     * - Hardware/UART/PL011 (with slashes, recommended)
+     * - hardwareUART (camelCase, allowed)
+     * - HardwareUART (PascalCase, allowed)
+     */
+    if (require_slash && !has_slash) {
+        /* Allow names without slashes if they're purely alphabetic/numeric */
+        /* This means camelCase and PascalCase are OK without slashes */
+        return 1;
+    }
+    
     return 1;
 }
 

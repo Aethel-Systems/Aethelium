@@ -9,7 +9,7 @@ func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64
     // Aethelium 高级语义：直接使用系统内置动作 print
     // 编译器会根据 @gate(\efi) 和入口参数自动对接 UEFI 的 ConOut 协议
     // 告别 B 语言的逐个赋值，告别复杂的函数指针强转
-    print("Hello, AethelOS World!")
+    print("Hello, Aethlium World!")
     print("hello")
 
     // --- 硬件层：处理器状态控制 ---

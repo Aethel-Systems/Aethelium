@@ -134,9 +134,16 @@ void silicon_codegen_microarch_config(FILE *out, ASTNode *config_node) {
                 fprintf(out, "    bts $30, %%rax\n");
                 fprintf(out, "    mov %%rax, %%cr0\n");
             }
-        } else if (strcmp(msr_name, "CR3") == 0 || strcmp(msr_name, "CPU/CR3") == 0) {
-            /* CR3通常存储页表基址 */
-            fprintf(out, "    /* Loading page table base from value */\n");
+        } else if (strcmp(msr_name, "CR3") == 0 ||
+                   strcmp(msr_name, "CPU/CR3") == 0 ||
+                   strcmp(msr_name, "PTCR") == 0 ||
+                   strcmp(msr_name, "CPU/PTCR") == 0 ||
+                   strcmp(msr_name, "CPU/Current\\Control\\CR3") == 0 ||
+                   strcmp(msr_name, "CPU/Current\\Control\\PTCR") == 0 ||
+                   strcmp(msr_name, "CPU/Current/Control/CR3") == 0 ||
+                   strcmp(msr_name, "CPU/Current/Control/PTCR") == 0) {
+            /* CR3/PTCR 都指向页表控制基址 */
+            fprintf(out, "    /* Loading page-table control base from value */\n");
             fprintf(out, "    mov %%rax, %%cr3\n");
         }
     }
@@ -319,4 +326,3 @@ void silicon_codegen_phys_type(FILE *out, ASTNode *phys_node) {
                 phys_node->data.phys_type.physical_address);
     }
 }
-

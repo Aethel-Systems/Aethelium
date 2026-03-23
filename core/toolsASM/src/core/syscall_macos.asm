@@ -45,7 +45,7 @@ section .text
 ; syscall_write
 ; Write data to file descriptor
 ; 
-; Parameters: rdi=fd, rsi=buf, rdx=count
+; Parameters: rdi=stream_port, rsi=buf, rdx=count
 ; Returns: rax=bytes_written (or -1 on error)
 ; ============================================================================
 global _syscall_write
@@ -59,7 +59,7 @@ _syscall_write:
 ; Open file
 ;
 ; Parameters: rdi=path, rsi=flags, rdx=mode
-; Returns: rax=fd (or -1 on error)
+; Returns: rax=stream_port (or -1 on error)
 ; ============================================================================
 global _syscall_open
 _syscall_open:
@@ -71,7 +71,7 @@ _syscall_open:
 ; syscall_close
 ; Close file descriptor
 ;
-; Parameters: rdi=fd
+; Parameters: rdi=stream_port
 ; Returns: rax=result
 ; ============================================================================
 global _syscall_close
@@ -127,4 +127,3 @@ _memset_safe:
     mov rcx, rdx            ; rcx = count
     rep stosb               ; Fill bytes
     ret
-

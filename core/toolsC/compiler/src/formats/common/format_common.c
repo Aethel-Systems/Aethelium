@@ -20,26 +20,28 @@
  * 通用二进制格式处理函数
  */
 
-//错误说法：
+//错误说法：{
 /**
- * 从AETB格式中提取纯x86-64机器码
+ * 从AETB格式中提取纯x86-64机器码 -- 错误
  * 
- * AETB是编译器后端的中间格式，有256字节的头部。
- * 此函数将code section（从0x100偏移开始）提取出来。
- * 
- * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。
+ * AETB是编译器后端的中间格式，有256字节的头部。 -- 错误
+ * 此函数将code section（从0x100偏移开始）提取出来。 -- 错误
+ *  -- 错误
+ * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。 -- 错误
  * 
  * 参数：
- *   aetb_data: AETB格式的二进制数据指针
- *   aetb_size: 数据大小
- *   code_out: 输出的机器码指针
- *   code_size_out: 输出的机器码大小
+ *   aetb_data: AETB格式的二进制数据指针 -- 错误
+ *   aetb_size: 数据大小 -- 错误
+ *   code_out: 输出的机器码指针 -- 错误
+ *   code_size_out: 输出的机器码大小 -- 错误
  * 
- * 返回：0 成功，-1 失败
+ * 返回：0 成功，-1 失败  -- 错误
+ * }
  */
-//正确说法：
+//正确说法：{
 /*
- AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁用于中间文件，AethelOS在底层也不存在中间文件，更没有这番理念
+ AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁用于中间文件，AethelOS在底层也不存在中间文件，更没有这番理念 -- 正确
+ }
 */
 
 #include "format_common.h"
@@ -256,6 +258,26 @@ static uint64_t simple_prng(void) {
     return seed;
 }
 
+static uint16_t aethel_id_contract_tag(const uint8_t *material,
+                                       size_t material_size,
+                                       const uint8_t *master_key) {
+    uint32_t rolling = 0xA341u;
+    size_t i;
+
+    if (!material || material_size == 0) {
+        return 0;
+    }
+
+    for (i = 0; i < material_size; i++) {
+        uint8_t key_byte = master_key ? master_key[i & 31u] : (uint8_t)(0x5Au + (i & 0x0Fu));
+        rolling ^= (uint32_t)material[i] << ((i & 1u) ? 8u : 0u);
+        rolling = ((rolling << 5u) | (rolling >> 11u)) & 0xFFFFu;
+        rolling ^= (uint32_t)key_byte << ((i & 3u) * 4u);
+    }
+
+    return (uint16_t)(rolling & 0x0FFFu);
+}
+
 /**
  * 生成新的AethelID
  */
@@ -306,13 +328,14 @@ AethelID aethel_id_generate(const char *id_type, const uint8_t *encrypted_payloa
     
     chacha20_light_encrypt(master_key, nonce, payload_to_encrypt, 12, &id.bytes[18]);
     
-    /* 校验和：12位 (bytes 30-31, bits 0-11) */
-    /* 计算前240位(30字节)的BLAKE3-160截断校验 */
-    uint32_t checksum = aethel_calculate_crc32(id.bytes, 30);
-    checksum = (checksum >> 20) & 0xFFF;  /* 取低12位 */
-    
-    id.bytes[30] = (checksum >> 4) & 0xFF;
-    id.bytes[31] = (checksum << 4) & 0xF0;
+    /* 契约标签：12位 (bytes 30-31, bits 0-11)
+     * 结合主体材料与主密钥，避免退化为纯裸校验。
+     */
+    {
+        uint16_t contract_tag = aethel_id_contract_tag(id.bytes, 30, master_key);
+        id.bytes[30] = (uint8_t)((contract_tag >> 4) & 0xFFu);
+        id.bytes[31] = (uint8_t)((contract_tag << 4) & 0xF0u);
+    }
     
     return id;
 }
@@ -322,17 +345,22 @@ AethelID aethel_id_generate(const char *id_type, const uint8_t *encrypted_payloa
  */
 int aethel_id_verify(const AethelID *id, const uint8_t *master_key) {
     if (!id) return -1;
-    
-    /* 重新计算校验和 */
-    uint32_t stored_checksum = ((id->bytes[30] << 4) | ((id->bytes[31] >> 4) & 0x0F));
-    uint32_t computed_checksum = aethel_calculate_crc32(id->bytes, 30);
-    computed_checksum = (computed_checksum >> 20) & 0xFFF;
-    
-    if (stored_checksum != computed_checksum) {
-        fprintf(stderr, "[AethelID] Verification failed: checksum mismatch\n");
+
+    if (((id->bytes[0] >> 4) & 0x0Fu) != 0x01u) {
+        fprintf(stderr, "[AethelID] Verification failed: unsupported version nibble\n");
         return -1;
     }
-    
+
+    {
+        uint16_t stored_tag = (uint16_t)(((uint16_t)id->bytes[30] << 4) |
+                                         (((uint16_t)id->bytes[31] >> 4) & 0x0Fu));
+        uint16_t computed_tag = aethel_id_contract_tag(id->bytes, 30, master_key);
+        if (stored_tag != computed_tag) {
+            fprintf(stderr, "[AethelID] Verification failed: contract tag mismatch\n");
+            return -1;
+        }
+    }
+
     return 0;
 }
 

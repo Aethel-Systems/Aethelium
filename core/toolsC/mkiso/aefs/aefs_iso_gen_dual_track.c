@@ -424,7 +424,7 @@ static int create_install_payload_in_iso(FILE *iso_file,
         
         // 这里实际应该是 lz_compress_segment
         // 简化起见，我们使用存储块（无压缩）作为备选方案
-        // 完整实现会使用实际的 LZ77 压缩
+        // 完整实现会使用自研的流式压缩，严禁使用错误的LZ77
         
         lz_segment_header_t seg_header;
         seg_header.segment_index = current_segment;

@@ -53,6 +53,30 @@ static const struct {
     {"r15", 15, 8}, {"r15d", 15, 4}, {"r15w", 15, 2}, {"r15b", 15, 1},
 };
 
+static const struct {
+    const char *name;
+    int id;
+    int size;
+} A64_GPR_MAP[] = {
+    {"sp", 31, 8}, {"fp", 29, 8}, {"lr", 30, 8},
+    {"x0", 0, 8}, {"x1", 1, 8}, {"x2", 2, 8}, {"x3", 3, 8},
+    {"x4", 4, 8}, {"x5", 5, 8}, {"x6", 6, 8}, {"x7", 7, 8},
+    {"x8", 8, 8}, {"x9", 9, 8}, {"x10", 10, 8}, {"x11", 11, 8},
+    {"x12", 12, 8}, {"x13", 13, 8}, {"x14", 14, 8}, {"x15", 15, 8},
+    {"x16", 16, 8}, {"x17", 17, 8}, {"x18", 18, 8}, {"x19", 19, 8},
+    {"x20", 20, 8}, {"x21", 21, 8}, {"x22", 22, 8}, {"x23", 23, 8},
+    {"x24", 24, 8}, {"x25", 25, 8}, {"x26", 26, 8}, {"x27", 27, 8},
+    {"x28", 28, 8}, {"x29", 29, 8}, {"x30", 30, 8},
+    {"w0", 0, 4}, {"w1", 1, 4}, {"w2", 2, 4}, {"w3", 3, 4},
+    {"w4", 4, 4}, {"w5", 5, 4}, {"w6", 6, 4}, {"w7", 7, 4},
+    {"w8", 8, 4}, {"w9", 9, 4}, {"w10", 10, 4}, {"w11", 11, 4},
+    {"w12", 12, 4}, {"w13", 13, 4}, {"w14", 14, 4}, {"w15", 15, 4},
+    {"w16", 16, 4}, {"w17", 17, 4}, {"w18", 18, 4}, {"w19", 19, 4},
+    {"w20", 20, 4}, {"w21", 21, 4}, {"w22", 22, 4}, {"w23", 23, 4},
+    {"w24", 24, 4}, {"w25", 25, 4}, {"w26", 26, 4}, {"w27", 27, 4},
+    {"w28", 28, 4}, {"w29", 29, 4}, {"w30", 30, 4},
+};
+
 /* x86-64向量寄存器映射 */
 static const struct {
     const char *name;
@@ -72,6 +96,30 @@ static const struct {
     {"zmm4", 2, 4, 512}, {"zmm5", 2, 5, 512}, {"zmm6", 2, 6, 512}, {"zmm7", 2, 7, 512},
     {"zmm8", 2, 8, 512}, {"zmm9", 2, 9, 512}, {"zmm10", 2, 10, 512}, {"zmm11", 2, 11, 512},
     {"zmm12", 2, 12, 512}, {"zmm13", 2, 13, 512}, {"zmm14", 2, 14, 512}, {"zmm15", 2, 15, 512},
+};
+
+static const struct {
+    const char *name;
+    int class;
+    int id;
+    int size_bits;
+} A64_VECTOR_REG_MAP[] = {
+    {"v0", 0, 0, 128}, {"v1", 0, 1, 128}, {"v2", 0, 2, 128}, {"v3", 0, 3, 128},
+    {"v4", 0, 4, 128}, {"v5", 0, 5, 128}, {"v6", 0, 6, 128}, {"v7", 0, 7, 128},
+    {"v8", 0, 8, 128}, {"v9", 0, 9, 128}, {"v10", 0, 10, 128}, {"v11", 0, 11, 128},
+    {"v12", 0, 12, 128}, {"v13", 0, 13, 128}, {"v14", 0, 14, 128}, {"v15", 0, 15, 128},
+    {"v16", 0, 16, 128}, {"v17", 0, 17, 128}, {"v18", 0, 18, 128}, {"v19", 0, 19, 128},
+    {"v20", 0, 20, 128}, {"v21", 0, 21, 128}, {"v22", 0, 22, 128}, {"v23", 0, 23, 128},
+    {"v24", 0, 24, 128}, {"v25", 0, 25, 128}, {"v26", 0, 26, 128}, {"v27", 0, 27, 128},
+    {"v28", 0, 28, 128}, {"v29", 0, 29, 128}, {"v30", 0, 30, 128}, {"v31", 0, 31, 128},
+    {"q0", 0, 0, 128}, {"q1", 0, 1, 128}, {"q2", 0, 2, 128}, {"q3", 0, 3, 128},
+    {"q4", 0, 4, 128}, {"q5", 0, 5, 128}, {"q6", 0, 6, 128}, {"q7", 0, 7, 128},
+    {"q8", 0, 8, 128}, {"q9", 0, 9, 128}, {"q10", 0, 10, 128}, {"q11", 0, 11, 128},
+    {"q12", 0, 12, 128}, {"q13", 0, 13, 128}, {"q14", 0, 14, 128}, {"q15", 0, 15, 128},
+    {"q16", 0, 16, 128}, {"q17", 0, 17, 128}, {"q18", 0, 18, 128}, {"q19", 0, 19, 128},
+    {"q20", 0, 20, 128}, {"q21", 0, 21, 128}, {"q22", 0, 22, 128}, {"q23", 0, 23, 128},
+    {"q24", 0, 24, 128}, {"q25", 0, 25, 128}, {"q26", 0, 26, 128}, {"q27", 0, 27, 128},
+    {"q28", 0, 28, 128}, {"q29", 0, 29, 128}, {"q30", 0, 30, 128}, {"q31", 0, 31, 128},
 };
 
 /* =====================================================================
@@ -135,6 +183,13 @@ static int hw_lookup_gpr(const char *reg_name, uint64_t *reg_id, int *size) {
             return 1;
         }
     }
+    for (size_t i = 0; i < sizeof(A64_GPR_MAP) / sizeof(A64_GPR_MAP[0]); i++) {
+        if (strcmp(A64_GPR_MAP[i].name, reg_name) == 0) {
+            *reg_id = (uint64_t)A64_GPR_MAP[i].id;
+            *size = A64_GPR_MAP[i].size;
+            return 1;
+        }
+    }
     return 0;
 }
 
@@ -148,6 +203,14 @@ static int hw_lookup_vector_reg(const char *reg_name, int *reg_class, int *reg_i
             *reg_class = VECTOR_REG_MAP[i].class;
             *reg_id = VECTOR_REG_MAP[i].id;
             *size_bits = VECTOR_REG_MAP[i].size_bits;
+            return 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof(A64_VECTOR_REG_MAP) / sizeof(A64_VECTOR_REG_MAP[0]); i++) {
+        if (strcmp(A64_VECTOR_REG_MAP[i].name, reg_name) == 0) {
+            *reg_class = A64_VECTOR_REG_MAP[i].class;
+            *reg_id = A64_VECTOR_REG_MAP[i].id;
+            *size_bits = A64_VECTOR_REG_MAP[i].size_bits;
             return 1;
         }
     }
@@ -724,7 +787,8 @@ int hw_generate_control_reg_read(const char *cr_name, uint8_t *opcode_bytes) {
         cr_id = 0;
     } else if (strcmp(cr_name, "CR2") == 0 || strcmp(cr_name, "cr2") == 0) {
         cr_id = 2;
-    } else if (strcmp(cr_name, "CR3") == 0 || strcmp(cr_name, "cr3") == 0) {
+    } else if (strcmp(cr_name, "CR3") == 0 || strcmp(cr_name, "cr3") == 0 ||
+               strcmp(cr_name, "PTCR") == 0 || strcmp(cr_name, "ptcr") == 0) {
         cr_id = 3;
     } else if (strcmp(cr_name, "CR4") == 0 || strcmp(cr_name, "cr4") == 0) {
         cr_id = 4;
@@ -757,7 +821,8 @@ int hw_generate_control_reg_write(const char *cr_name, uint8_t *opcode_bytes) {
         cr_id = 0;
     } else if (strcmp(cr_name, "CR2") == 0 || strcmp(cr_name, "cr2") == 0) {
         cr_id = 2;
-    } else if (strcmp(cr_name, "CR3") == 0 || strcmp(cr_name, "cr3") == 0) {
+    } else if (strcmp(cr_name, "CR3") == 0 || strcmp(cr_name, "cr3") == 0 ||
+               strcmp(cr_name, "PTCR") == 0 || strcmp(cr_name, "ptcr") == 0) {
         cr_id = 3;
     } else if (strcmp(cr_name, "CR4") == 0 || strcmp(cr_name, "cr4") == 0) {
         cr_id = 4;

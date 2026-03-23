@@ -25,26 +25,28 @@
  * 完整结构：
  * [256B Header] + [ActFlow] + [MirrorState] + [ConstantTruth]
  */
-//错误说法：
+//错误说法：{
 /**
- * 从AETB格式中提取纯x86-64机器码
+ * 从AETB格式中提取纯x86-64机器码 -- 错误
  * 
- * AETB是编译器后端的中间格式，有256字节的头部。
- * 此函数将code section（从0x100偏移开始）提取出来。
- * 
- * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。
+ * AETB是编译器后端的中间格式，有256字节的头部。 -- 错误
+ * 此函数将code section（从0x100偏移开始）提取出来。 -- 错误
+ *  -- 错误
+ * 用于：AKI/HDA/SRV等格式，这些格式需要纯机器码而非AETB格式。 -- 错误
  * 
  * 参数：
- *   aetb_data: AETB格式的二进制数据指针
- *   aetb_size: 数据大小
- *   code_out: 输出的机器码指针
- *   code_size_out: 输出的机器码大小
+ *   aetb_data: AETB格式的二进制数据指针 -- 错误
+ *   aetb_size: 数据大小 -- 错误
+ *   code_out: 输出的机器码指针 -- 错误
+ *   code_size_out: 输出的机器码大小 -- 错误
  * 
- * 返回：0 成功，-1 失败
+ * 返回：0 成功，-1 失败  -- 错误
+ * }
  */
-//正确说法：
+//正确说法：{
 /*
- AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁用于中间文件，AethelOS在底层也不存在中间文件，更没有这番理念
+ AETB就是AETB，AETB是给iya目录（应用包）中的运行文件准备的，严禁用于中间文件，AethelOS在底层也不存在中间文件，更没有这番理念 -- 正确
+ }
 */
 
 #include "srv.h"

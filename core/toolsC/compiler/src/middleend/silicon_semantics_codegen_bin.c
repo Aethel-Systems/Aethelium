@@ -272,7 +272,14 @@ void silicon_bin_gen_microarch_config(BinBuffer *buf,
         }
         
         gen_mov_rax_to_cr0(buf);
-    } else if (strcmp(msr_name, "CR3") == 0 || strcmp(msr_name, "CPU/CR3") == 0) {
+    } else if (strcmp(msr_name, "CR3") == 0 ||
+               strcmp(msr_name, "CPU/CR3") == 0 ||
+               strcmp(msr_name, "PTCR") == 0 ||
+               strcmp(msr_name, "CPU/PTCR") == 0 ||
+               strcmp(msr_name, "CPU/Current\\Control\\CR3") == 0 ||
+               strcmp(msr_name, "CPU/Current\\Control\\PTCR") == 0 ||
+               strcmp(msr_name, "CPU/Current/Control/CR3") == 0 ||
+               strcmp(msr_name, "CPU/Current/Control/PTCR") == 0) {
         gen_mov_rax_to_cr3(buf);
     }
 }

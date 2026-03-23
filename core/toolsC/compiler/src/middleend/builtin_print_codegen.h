@@ -191,7 +191,7 @@ static const char METAL_COM1_CODE[] =
     "                       \t/* wait for UART ready */\n"
     "b9 00 00 00 00         \t/* mov ecx, 0 (timeout counter) */\n"
     ".L_com1_wait:\n"
-    "be fd 03 00 00         \t/* mov esi, 0x3FD (COM1 status port) */\n"
+    "be FD 03 00 00         \t/* mov esi, 0x3FD (COM1 status port) */\n"
     "ec                     \t/* in al, dx... wait, need to fix */\n"
     "                       \t/* This is pseudo-code, real would use inline asm */\n"
     "ee                     \t/* out dx, al (output char to COM1) */\n"
