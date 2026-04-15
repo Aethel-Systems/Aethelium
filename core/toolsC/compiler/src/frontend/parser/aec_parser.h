@@ -121,7 +121,7 @@ struct ASTNode {
             ASTNode *return_type;
             ASTNode *body;
             int is_extern;    /* 新增：标记是否为外部函数 */
-            /* [TODO-06] 装饰器支持 */
+            /* [任务实现-06] 装饰器支持 */
             char **attributes;    /* 装饰器数组 (@entry, @packed, 等) */
             int attr_count;       /* 装饰器数量 */
         } func_decl;

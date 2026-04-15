@@ -164,7 +164,7 @@ static void strike_print_footer(void) {
 }
 
 /* ===================================================================
- * [TODO-01] 点号罢工检测
+ * [任务实现-01] 点号罢工检测
  * =================================================================== */
 int strike_detect_dot_access(const char *lexeme, int line, int column,
                               int is_in_float_literal) {
@@ -189,7 +189,7 @@ int strike_detect_dot_access(const char *lexeme, int line, int column,
 }
 
 /* ===================================================================
- * [TODO-02] 箭头罢工检测
+ * [任务实现-02] 箭头罢工检测
  * =================================================================== */
 int strike_detect_arrow(const char *lexeme, int line, int column) {
     if (!lexeme || strcmp(lexeme, "->") != 0) {
@@ -208,7 +208,7 @@ int strike_detect_arrow(const char *lexeme, int line, int column) {
 }
 
 /* ===================================================================
- * [TODO-04] 下划线在标识符中的罢工
+ * [任务实现-04] 下划线在标识符中的罢工
  * =================================================================== */
 int strike_detect_underscore_identifier(const char *identifier, int line, 
                                          int column) {
@@ -230,9 +230,26 @@ int strike_detect_underscore_identifier(const char *identifier, int line,
     return 0;
 }
 
+int strike_detect_asm_keyword(const char *identifier, int line, int column) {
+    if (!identifier || strcmp(identifier, "asm") != 0) {
+        return 0;
+    }
+
+    strike_print_header("内联汇编关键字");
+    fprintf(stderr, "检测到: '%s' (在第 %d 行，第 %d 列)\n",
+            identifier, line, column);
+    fprintf(stderr, "理由: Aethelium 的硬件控制必须通过原生硬件层表达\n");
+    fprintf(stderr, "内联汇编会绕开语义层、布局层与架构约束，直接污染编译链\n");
+    fprintf(stderr, "纠正: 请使用 hardware { ... }、port<T>、reg<...> 或 hardware\\isa\\*()\n");
+    fprintf(stderr, "示例: hardware { hardware\\isa\\hlt() } 而非 asm { \"hlt\" }\n");
+    strike_print_footer();
+
+    return 1;
+}
+
 
 /* ===================================================================
- * [TODO-03] 禁忌头文件罢工
+ * [任务实现-03] 禁忌头文件罢工
  * =================================================================== */
 int strike_detect_forbidden_include(const char *include_path) {
     if (!include_path) return 0;
@@ -264,7 +281,7 @@ int strike_detect_forbidden_include(const char *include_path) {
 }
 
 /* ===================================================================
- * [TODO-05] 禁咒符号检测
+ * [任务实现-05] 禁咒符号检测
  * =================================================================== */
 int strike_detect_forbidden_symbol(const char *symbol_name, int line, 
                                     int column) {
@@ -338,7 +355,7 @@ int strike_detect_forbidden_identifier(const char *identifier, int line, int col
 }
 
 /* ===================================================================
- * [TODO-06] Main 函数检测
+ * [任务实现-06] Main 函数检测
  * =================================================================== */
 int strike_detect_main_function(const char *function_name) {
     if (!function_name) return 0;
@@ -359,7 +376,7 @@ int strike_detect_main_function(const char *function_name) {
 }
 
 /* ===================================================================
- * [TODO-07] GNU 扩展检测
+ * [任务实现-07] GNU 扩展检测
  * =================================================================== */
 int strike_detect_gnu_extension(const char *extension_syntax) {
     if (!extension_syntax) return 0;

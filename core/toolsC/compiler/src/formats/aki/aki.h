@@ -22,9 +22,9 @@
  * - Header (256字节) - 标准AethelBinaryHeader + AKI特定扩展
  * - [Full Structure]:
  *   1. ActFlow Zone: x86-64机器码 + vCore调度器、SIP实时拦截逻辑
- *   2. MirrorState Zone: 系统运行时状态、内存对象
- *   3. ConstantTruth Zone: 系统预设的AethelID字典、配置表
- *   4. AethelA Compiler Engine: SourceInterpretor、SipWeaver、TargetMorpher等
+ *   2. TruthStatic Zone: 系统预设的AethelID字典、配置表
+ *   3. AethelA Compiler Engine: SourceInterpretor、SipWeaver、TargetMorpher等
+ *   4. IdentityNexus: AethelID 与内核入口/区段/引擎组件的强绑定表
  */
 
 #ifndef AETHEL_FORMAT_AKI_H
@@ -118,16 +118,17 @@ void aki_header_set_aethela_engine(AethelBinaryHeader *hdr, uint64_t entry);
  * 
  * 完整的[Full Structure]实现：
  * - ActFlow Zone: x86-64机器码 + vCore调度器 + SIP拦截逻辑
- * - MirrorState Zone: 系统运行时状态（可选）
- * - ConstantTruth Zone: AethelID字典、配置（可选）
+ * - TruthStatic Zone: AethelID字典、预设元数据（可选附加payload）
+ * - AethelA Logic Zone: SourceInterpretor / SipWeaver / TargetMorpher manifest
+ * - IdentityNexus: AethelID 与区段/组件目标偏移的绑定记录
  * 
  * @param output_file     输出AKI文件路径
  * @param code            编译产生的ActFlow机器码
  * @param code_size       ActFlow大小
- * @param mirror_data     MirrorState数据 (NULL表示无)
- * @param mirror_size     MirrorState大小
- * @param constant_data   ConstantTruth数据 (NULL表示无)
- * @param constant_size   ConstantTruth大小
+ * @param mirror_data     TruthStatic附加数据 (NULL表示无)
+ * @param mirror_size     TruthStatic附加数据大小
+ * @param constant_data   AethelA Logic附加数据 (NULL表示无)
+ * @param constant_size   AethelA Logic附加数据大小
  * @return                成功返回0，失败返回非0
  */
 int aki_generate_image(const char *output_file, 

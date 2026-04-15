@@ -1,0 +1,5 @@
+@entry
+func start() : UInt64 {
+    print("hello exe")
+    return 0
+}

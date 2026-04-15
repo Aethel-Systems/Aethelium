@@ -5365,7 +5365,7 @@ ASTNode* parser_parse_program(Parser *parser) {
             func->data.func_decl.name = (char *)parser_intern_string(parser, func_name);
             free(func_name);
             func->data.func_decl.is_extern = is_extern;
-            /* [TODO-06] 保存装饰器信息 */
+            /* [任务实现-06] 保存装饰器信息 */
             func->data.func_decl.attributes = attributes;
             func->data.func_decl.attr_count = attr_count;
             

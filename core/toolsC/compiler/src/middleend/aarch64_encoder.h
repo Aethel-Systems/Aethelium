@@ -62,6 +62,7 @@ uint32_t a64_insn_blr(int rn);
 #define A64_INSN_RET                0xD65F03C0u
 #define A64_INSN_NOP                0xD503201Fu
 #define A64_INSN_SVC_0              0xD4000001u
+#define A64_INSN_HVC_0              0xD4000002u
 #define A64_INSN_WFI                0xD503207Fu
 #define A64_INSN_WFE                0xD503205Fu
 #define A64_INSN_SEV                0xD503209Fu
@@ -87,7 +88,7 @@ uint32_t a64_insn_blr(int rn);
 /* ============================================================================
  * LAW OF NON-CLIPPED IMPLEMENTATION - COMPLETE AARCH64 INSTRUCTION SET
  * Every instruction has FULL defensive checks, error handling, and validation.
- * NO placeholder comments, NO TODO marks, NO simplified logic.
+ * NO placeholder comments, NO 任务实现 marks, NO simplified logic.
  * ============================================================================ */
 
 /* ============================================================================

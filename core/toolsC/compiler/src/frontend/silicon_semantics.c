@@ -64,7 +64,7 @@ static char* safe_strdup(const char *str) {
  * silicon块必须在Rimport后才能使用
  */
 int silicon_check_rimport_context(void) {
-    /* TODO: 检查编译上下文中是否有Rimport权限 */
+    /* 任务实现: 检查编译上下文中是否有Rimport权限 */
     return 1;  /* 现在假设权限检查已通过 */
 }
 

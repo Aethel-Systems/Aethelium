@@ -34,6 +34,39 @@
 #include <time.h>
 #include <errno.h>
 
+static int pe_x86_entry_score(const uint8_t *buf, size_t size, uint64_t offset) {
+    const uint8_t *p;
+    int score = 0;
+    if (!buf || offset >= size) {
+        return -1;
+    }
+    p = buf + offset;
+    if (p[0] == 0x55) score += 3;
+    if (offset + 4 <= size &&
+        p[0] == 0x55 &&
+        p[1] == 0x48 &&
+        p[2] == 0x89 &&
+        p[3] == 0xE5) {
+        score += 4;
+    }
+    if (offset + 3 <= size &&
+        p[0] == 0x48 &&
+        p[1] == 0x83 &&
+        p[2] == 0xEC) {
+        score += 3;
+    }
+    if (offset + 4 <= size &&
+        p[0] == 0x48 &&
+        p[1] == 0x81 &&
+        p[2] == 0xEC) {
+        score += 3;
+    }
+    if (p[0] == 0xE9 || p[0] == 0xE8) {
+        score += 1;
+    }
+    return score;
+}
+
 /* ============================================================
    校验和计算 - Carrillo-Sahni 算法
    UEFI规范中定义的PE校验和计算方法
@@ -172,18 +205,38 @@ int pe32plus_generate_efi(const char *output_file,
     uint32_t reloc_rva = text_rva + text_size_mem;
     uint32_t image_size = reloc_rva + reloc_size_mem;
 
-    /* UEFI入口优先取genesis_pt（编译器选定的入口函数偏移），其次回退到ActFlow */
-    if (aetb_hdr->genesis_point >= AETHEL_HEADER_SIZE && aetb_hdr->genesis_point < aetb_size &&
-        aetb_hdr->genesis_point <= (uint64_t)(UINT32_MAX - text_rva)) {
-        entry_rva = text_rva + (uint32_t)aetb_hdr->genesis_point;
-    } else if (act_flow_offset >= AETHEL_HEADER_SIZE && act_flow_offset < aetb_size &&
-               act_flow_offset <= (uint64_t)(UINT32_MAX - text_rva)) {
-        entry_rva = text_rva + (uint32_t)act_flow_offset;
-    } else {
+    /* UEFI入口优先取 genesis_point，但该字段在嵌入式 AETB 路径里可能是
+       相对 ActFlow 的偏移，也可能是相对整个 .text/AETB 的偏移。
+       因此这里同时评估两个候选地址，并优先选择更像函数入口的那个。 */
+    if (aetb_hdr->genesis_point < aetb_size) {
+        uint64_t direct_off = aetb_hdr->genesis_point;
+        uint64_t actflow_rel_off = act_flow_offset + aetb_hdr->genesis_point;
+        int direct_score = pe_x86_entry_score(aetb_data, aetb_size, direct_off);
+        int actflow_score = pe_x86_entry_score(aetb_data, aetb_size, actflow_rel_off);
+        uint64_t chosen_off = direct_off;
+
+        if (actflow_rel_off < aetb_size &&
+            (actflow_score > direct_score ||
+             (direct_score < 3 && actflow_score >= 3))) {
+            chosen_off = actflow_rel_off;
+        }
+
+        if (chosen_off >= AETHEL_HEADER_SIZE &&
+            chosen_off <= (uint64_t)(UINT32_MAX - text_rva)) {
+            entry_rva = text_rva + (uint32_t)chosen_off;
+        }
+    }
+
+    if (entry_rva == text_rva + AETHEL_HEADER_SIZE) {
+        if (act_flow_offset >= AETHEL_HEADER_SIZE && act_flow_offset < aetb_size &&
+            act_flow_offset <= (uint64_t)(UINT32_MAX - text_rva)) {
+            entry_rva = text_rva + (uint32_t)act_flow_offset;
+        } else {
         fprintf(stderr,
                 "[PE32+] Warning: Invalid entry offsets (genesis=%llu, act_flow=%llu), fallback to 0x%x\n",
                 (unsigned long long)aetb_hdr->genesis_point,
                 (unsigned long long)act_flow_offset, entry_rva);
+        }
     }
     
     /* 文件指针计算 */

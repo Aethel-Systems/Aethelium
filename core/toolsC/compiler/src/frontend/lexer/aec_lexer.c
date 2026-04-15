@@ -159,7 +159,11 @@ static void lexer_error(Lexer *lexer, const char *fmt, ...) {
     if (!lexer) return;
     
     va_list args;
+    va_list args_history;
+    va_list args_last;
     va_start(args, fmt);
+    va_copy(args_history, args);
+    va_copy(args_last, args);
     
     /* 立即输出到 stderr */
     fprintf(stderr, "[FATAL LEXER] Line %d, Col %d: ", lexer->line, lexer->column);
@@ -168,10 +172,12 @@ static void lexer_error(Lexer *lexer, const char *fmt, ...) {
     
     /* 存储错误信息 */
     if (lexer->error_count < 32) {
-        vsnprintf(lexer->errors[lexer->error_count], 256, fmt, args);
+        vsnprintf(lexer->errors[lexer->error_count], 256, fmt, args_history);
     }
-    vsnprintf(lexer->error, sizeof(lexer->error), fmt, args);
+    vsnprintf(lexer->error, sizeof(lexer->error), fmt, args_last);
     
+    va_end(args_last);
+    va_end(args_history);
     va_end(args);
     
     lexer->error_count++;
@@ -303,9 +309,15 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
             strncpy(ident, &lexer->input[start], len);
             ident[len] = '\0';
             
-            /* [TODO-04] 检测标识符中的下划线罢工 */
+            /* [任务实现-04] 检测标识符中的下划线罢工 */
             if (strike_detect_underscore_identifier(ident, lexer->line, 
                                                      lexer->column)) {
+                free(ident);
+                exit(COMPILER_STRIKE_CODE);
+            }
+
+            if (strike_detect_asm_keyword(ident, lexer->line, lexer->column)) {
+                lexer_error(lexer, "Inline asm is forbidden; use the hardware layer instead");
                 free(ident);
                 exit(COMPILER_STRIKE_CODE);
             }
@@ -354,7 +366,7 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
                 advance(lexer); advance(lexer);
                 add_token(lexer, TK_MINUS_ASSIGN, "-=");
             } else if (next == '>') {
-                /* [TODO-02] 检测箭头操作符罢工 */
+                /* [任务实现-02] 检测箭头操作符罢工 */
                 strike_detect_arrow("->", lexer->line, lexer->column);
                 advance(lexer); advance(lexer);
                 add_token(lexer, TK_ARROW, "->");
@@ -463,7 +475,7 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
                 advance(lexer); advance(lexer);
                 add_token(lexer, TK_RANGE, "..");
             } else {
-                /* [TODO-01] 检测单独点号罢工 - 点号用于访问成员 */
+                /* [任务实现-01] 检测单独点号罢工 - 点号用于访问成员 */
                 strike_detect_dot_access(".", lexer->line, lexer->column, 0);
                 advance(lexer);
                 add_token(lexer, TK_DOT, ".");

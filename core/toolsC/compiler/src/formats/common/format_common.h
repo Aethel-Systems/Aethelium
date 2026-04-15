@@ -52,7 +52,7 @@
 #define AETHEL_ID_CHECKSUM_BITS     12      /* 校验位数 */
 
 /* AethelOS纪元时间 (2026-01-06 00:00:00 UTC) */
-#define AETHEL_EPOCH_TIMESTAMP      1735987200
+#define AETHEL_EPOCH_TIMESTAMP      1767628800
 
 /* 二进制格式魔数 */
 #define MAGIC_AKI               0x21494B41  /* "AKI!" */

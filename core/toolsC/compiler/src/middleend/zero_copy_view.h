@@ -24,7 +24,7 @@
  * 
  * 功能：
  * - view<T>类型的编译时检查
- * - 零拷贝视图的x86-64机器码生成
+ * - 零拷贝视图的 x86-64 / AArch64 代码生成
  * - 内存对齐与边界检查
  * - 类型安全的强转换
  */
@@ -79,21 +79,23 @@ void zcv_free_view_info(ZeroCopyViewInfo *info);
 int zcv_validate_view_type(const char *view_type_name);
 
 /**
- * 生成零拷贝视图的x86-64机器码
- * 本质：ptr -> rax, type信息 -> rcx, 生成一个"解释"指令序列
+ * 生成零拷贝视图代码
+ * 本质：ptr -> view<T>，只重解释指针，不复制数据
  * 
  * 参数：
  *   out: 输出文件
  *   source_ptr_reg: 源指针寄存器(如"rax")
  *   target_type: 目标view类型(如"view<PacketHeader>")
  *   view_var_name: 目标变量名(用于调试符号)
+ *   target_isa: 目标ISA（如"x86_64" / "aarch64"）
  * 
  * 返回：生成的机器码字节数
  */
 size_t zcv_gen_view_cast(FILE *out,
                          const char *source_ptr_reg,
                          const char *target_type,
-                         const char *view_var_name);
+                         const char *view_var_name,
+                         const char *target_isa);
 
 /**
  * 生成view<T>成员访问的机器码
@@ -114,7 +116,8 @@ size_t zcv_gen_view_member_access(FILE *out,
                                   const char *member_name,
                                   uint32_t member_offset,
                                   uint8_t member_size,
-                                  const char *target_reg);
+                                  const char *target_reg,
+                                  const char *target_isa);
 
 /**
  * 生成view<[T]>数组访问的机器码
@@ -124,7 +127,8 @@ size_t zcv_gen_view_array_access(FILE *out,
                                  const char *view_array_reg,
                                  const char *index_reg,
                                  uint32_t element_size,
-                                 const char *target_reg);
+                                 const char *target_reg,
+                                 const char *target_isa);
 
 /**
  * 生成view<T>的内存对齐检查
@@ -132,7 +136,8 @@ size_t zcv_gen_view_array_access(FILE *out,
  */
 size_t zcv_gen_alignment_check(FILE *out,
                                const char *ptr_reg,
-                               uint32_t alignment);
+                               uint32_t alignment,
+                               const char *target_isa);
 
 /**
  * 获取view<T>的总大小（用于边界检查）

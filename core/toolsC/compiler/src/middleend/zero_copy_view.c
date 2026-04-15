@@ -121,6 +121,14 @@ static uint32_t get_type_alignment(const char *type) {
     return size;
 }
 
+static ZeroCopyViewInfo* zcv_parse_view_type_name(const char *type_name) {
+    ASTNode stub;
+    memset(&stub, 0, sizeof(stub));
+    stub.type = AST_TYPE;
+    stub.data.type.name = (char *)type_name;
+    return zcv_parse_view_type(&stub);
+}
+
 /* =====================================================================
  * 公开函数实现
  * ===================================================================== */
@@ -208,65 +216,65 @@ int zcv_validate_view_type(const char *view_type_name) {
 size_t zcv_gen_view_cast(FILE *out,
                         const char *source_ptr_reg,
                         const char *target_type,
-                        const char *view_var_name) {
+                        const char *view_var_name,
+                        const char *target_isa) {
+    const char *isa;
+    ZeroCopyViewInfo *info;
+
     if (!out || !source_ptr_reg || !target_type || !view_var_name) {
         return 0;
     }
-    
+
+    isa = (target_isa && *target_isa) ? target_isa : "x86_64";
     size_t code_size = 0;
-    
-    /* 零拷贝视图的核心：指针=解释
-     * 在x86-64中，我们不需要复制数据
-     * 只需将指针存储到目标变量位置
-     * 
-     * 策略：将source_ptr_reg的值直接移到堆栈上的view变量位置
-     * （假设view变量已经在堆栈中分配）
-     */
-    
-    fprintf(out, "    /* Zero-Copy View Cast: %s -> %s */\n", source_ptr_reg, target_type);
-    
+
+    fprintf(out, "    /* Zero-Copy View Cast [%s]: %s -> %s */\n", isa, source_ptr_reg, target_type);
+
     /* 验证view类型有效 */
     if (zcv_validate_view_type(target_type) != 0) {
         fprintf(out, "    /* ERROR: Invalid view type %s */\n", target_type);
         return 0;
     }
-    
-    /* 生成1: 将源指针移到rax（如果还没有的话） */
-    if (strcmp(source_ptr_reg, "rax") != 0) {
-        fprintf(out, "    mov %s, %%rax\n", source_ptr_reg);
-        code_size += 3;  /* mov reg, rax大约3字节 */
+
+    if (strcmp(isa, "aarch64") == 0) {
+        if (strcmp(source_ptr_reg, "x0") != 0) {
+            fprintf(out, "    mov x0, %s\n", source_ptr_reg);
+            code_size += 4;
+        }
+        fprintf(out, "    /* Store view pointer (zero-copy, no data movement) */\n");
+        fprintf(out, "    str x0, [x29, #-8]\n");
+        code_size += 4;
+    } else {
+        if (strcmp(source_ptr_reg, "rax") != 0) {
+            fprintf(out, "    mov %s, %%rax\n", source_ptr_reg);
+            code_size += 3;
+        }
+        fprintf(out, "    /* Store view pointer (zero-copy, no data movement) */\n");
+        fprintf(out, "    mov %%rax, -8(%%rbp)   /* view at -8(rbp) */\n");
+        code_size += 3;
     }
-    
-    /* 生成2: 存储指针到view变量堆栈位置
-     * 这里假设view变量在 -X(%%rbp)
-     * 实际上由变量分配器决定
-     */
-    fprintf(out, "    /* Store view pointer (zero-copy, no data movement) */\n");
-    fprintf(out, "    mov %%rax, -8(%%rbp)   /* view at -8(rbp) */\n");
-    code_size += 3;
-    
-    /* 生成3: 内存对齐检查（如果需要）
-     * 某些类型（如SIMD）可能有特殊对齐要求
-     */
-    ZeroCopyViewInfo *info = zcv_parse_view_type(
-        ((ASTNode *)target_type)  /* 这里实际上应该从AST节点来，但demo中用字符串 */
-    );
-    
+
+    info = zcv_parse_view_type_name(target_type);
     if (info && info->alignment > 1) {
         fprintf(out, "    /* Alignment check: %u-byte alignment */\n", info->alignment);
-        fprintf(out, "    mov %%rax, %%rcx\n");
-        fprintf(out, "    and $%u, %%rcx\n", info->alignment - 1);
-        fprintf(out, "    test %%rcx, %%rcx\n");
-        fprintf(out, "    jz .view_aligned_%s\n", view_var_name);
-        fprintf(out, "    /* Misaligned: would generate trap */\n");
-        fprintf(out, ".view_aligned_%s:\n", view_var_name);
+        if (strcmp(isa, "aarch64") == 0) {
+            fprintf(out, "    and x9, x0, #%u\n", info->alignment - 1);
+            fprintf(out, "    cbz x9, .view_aligned_%s\n", view_var_name);
+            fprintf(out, "    /* Misaligned: would generate trap */\n");
+            fprintf(out, ".view_aligned_%s:\n", view_var_name);
+        } else {
+            fprintf(out, "    mov %%rax, %%rcx\n");
+            fprintf(out, "    and $%u, %%rcx\n", info->alignment - 1);
+            fprintf(out, "    test %%rcx, %%rcx\n");
+            fprintf(out, "    jz .view_aligned_%s\n", view_var_name);
+            fprintf(out, "    /* Misaligned: would generate trap */\n");
+            fprintf(out, ".view_aligned_%s:\n", view_var_name);
+        }
         code_size += 20;  /* 粗略估计 */
-        
         zcv_free_view_info(info);
     }
-    
+
     fprintf(out, "    /* View cast complete: pointer reinterpreted as %s */\n", target_type);
-    
     return code_size;
 }
 
@@ -275,44 +283,59 @@ size_t zcv_gen_view_member_access(FILE *out,
                                  const char *member_name,
                                  uint32_t member_offset,
                                  uint8_t member_size,
-                                 const char *target_reg) {
+                                 const char *target_reg,
+                                 const char *target_isa) {
     if (!out || !view_var_reg || !member_name || !target_reg) {
         return 0;
     }
-    
+
     size_t code_size = 0;
-    
-    fprintf(out, "    /* View member access: %s\\%s at offset %u */\n",
-           view_var_reg, member_name, member_offset);
-    
-    /* 生成：从view_var_reg+offset读取member_size字节到target_reg */
-    
+
+    fprintf(out, "    /* View member access [%s]: %s\\%s at offset %u */\n",
+           (target_isa && *target_isa) ? target_isa : "x86_64", view_var_reg, member_name, member_offset);
+
+    if (target_isa && strcmp(target_isa, "aarch64") == 0) {
+        switch (member_size) {
+            case 1:
+                fprintf(out, "    ldrb %s, [%s, #%u]\n", target_reg, view_var_reg, member_offset);
+                return code_size + 4;
+            case 2:
+                fprintf(out, "    ldrh %s, [%s, #%u]\n", target_reg, view_var_reg, member_offset);
+                return code_size + 4;
+            case 4:
+                fprintf(out, "    ldr w0, [%s, #%u]\n", view_var_reg, member_offset);
+                return code_size + 4;
+            case 8:
+                fprintf(out, "    ldr %s, [%s, #%u]\n", target_reg, view_var_reg, member_offset);
+                return code_size + 4;
+            default:
+                fprintf(out, "    /* Unsupported member size: %u */\n", member_size);
+                return 0;
+        }
+    }
+
     switch (member_size) {
         case 1:
             fprintf(out, "    movzbl %u(%s), %s\n", member_offset, view_var_reg, target_reg);
             code_size += 4;
             break;
-            
         case 2:
             fprintf(out, "    movzwl %u(%s), %s\n", member_offset, view_var_reg, target_reg);
             code_size += 4;
             break;
-            
         case 4:
             fprintf(out, "    movl %u(%s), %s\n", member_offset, view_var_reg, target_reg);
             code_size += 4;
             break;
-            
         case 8:
             fprintf(out, "    movq %u(%s), %s\n", member_offset, view_var_reg, target_reg);
             code_size += 4;
             break;
-            
         default:
             fprintf(out, "    /* Unsupported member size: %u */\n", member_size);
             return 0;
     }
-    
+
     return code_size;
 }
 
@@ -320,21 +343,46 @@ size_t zcv_gen_view_array_access(FILE *out,
                                 const char *view_array_reg,
                                 const char *index_reg,
                                 uint32_t element_size,
-                                const char *target_reg) {
+                                const char *target_reg,
+                                const char *target_isa) {
     if (!out || !view_array_reg || !index_reg || !target_reg) {
         return 0;
     }
-    
+
     size_t code_size = 0;
-    
-    fprintf(out, "    /* View array access: %s[%s] with element_size=%u */\n",
-           view_array_reg, index_reg, element_size);
-    
-    /* 计算 address = base + index * element_size */
+
+    fprintf(out, "    /* View array access [%s]: %s[%s] with element_size=%u */\n",
+           (target_isa && *target_isa) ? target_isa : "x86_64", view_array_reg, index_reg, element_size);
+
+    if (target_isa && strcmp(target_isa, "aarch64") == 0) {
+        fprintf(out, "    mov x9, %s\n", view_array_reg);
+        fprintf(out, "    mov x10, %s\n", index_reg);
+        fprintf(out, "    mov x11, #%u\n", element_size);
+        fprintf(out, "    mul x10, x10, x11\n");
+        fprintf(out, "    add x9, x9, x10\n");
+        switch (element_size) {
+            case 1:
+                fprintf(out, "    ldrb %s, [x9]\n", target_reg);
+                return 20;
+            case 2:
+                fprintf(out, "    ldrh %s, [x9]\n", target_reg);
+                return 20;
+            case 4:
+                fprintf(out, "    ldr w0, [x9]\n");
+                return 20;
+            case 8:
+                fprintf(out, "    ldr %s, [x9]\n", target_reg);
+                return 20;
+            default:
+                fprintf(out, "    /* Unsupported array element size: %u */\n", element_size);
+                return 0;
+        }
+    }
+
     fprintf(out, "    mov %s, %%rax\n", view_array_reg);
     fprintf(out, "    mov %s, %%rcx\n", index_reg);
     code_size += 6;
-    
+
     if (element_size == 1) {
         fprintf(out, "    movzbl (%%rax, %%rcx), %s\n", target_reg);
         code_size += 4;
@@ -359,32 +407,48 @@ size_t zcv_gen_view_array_access(FILE *out,
 
 size_t zcv_gen_alignment_check(FILE *out,
                               const char *ptr_reg,
-                              uint32_t alignment) {
+                              uint32_t alignment,
+                              const char *target_isa) {
     if (!out || !ptr_reg || alignment <= 1) {
         return 0;
     }
-    
+
     size_t code_size = 0;
-    
-    fprintf(out, "    /* Alignment check: %u-byte */\n", alignment);
-    fprintf(out, "    mov %s, %%rax\n", ptr_reg);
-    fprintf(out, "    and $%u, %%rax\n", alignment - 1);
-    fprintf(out, "    test %%rax, %%rax\n");
-    fprintf(out, "    jnz .alignment_fault\n");
-    code_size += 14;
-    
+
+    fprintf(out, "    /* Alignment check [%s]: %u-byte */\n",
+            (target_isa && *target_isa) ? target_isa : "x86_64", alignment);
+    if (target_isa && strcmp(target_isa, "aarch64") == 0) {
+        fprintf(out, "    and x9, %s, #%u\n", ptr_reg, alignment - 1);
+        fprintf(out, "    cbnz x9, .alignment_fault\n");
+        code_size += 8;
+    } else {
+        fprintf(out, "    mov %s, %%rax\n", ptr_reg);
+        fprintf(out, "    and $%u, %%rax\n", alignment - 1);
+        fprintf(out, "    test %%rax, %%rax\n");
+        fprintf(out, "    jnz .alignment_fault\n");
+        code_size += 14;
+    }
+
     return code_size;
+}
+
+/* 新增：支持向量流式存储（非时序写入） */
+size_t zcv_gen_view_stream(FILE *out, const char *ymm_reg, uint32_t offset, const char *target_reg) {
+    /* 编码 vmovntdq ymm, [rax + offset] */
+    /* 指令：C5 FD E7 ... */
+    fprintf(out, "    # Stream vector to memory (non-temporal)\n");
+    fprintf(out, "    .byte 0xC5, 0xFD, 0xE7, 0x80, 0x%02X, 0x00, 0x00, 0x00\n", (unsigned char)offset);
+    return 8;
 }
 
 uint64_t zcv_get_view_total_size(const char *view_type, uint64_t array_element_count) {
     if (!view_type) return 0;
-    
-    ZeroCopyViewInfo *info = zcv_parse_view_type(NULL);  /* 实际需要从AST来 */
-    
+
+    ZeroCopyViewInfo *info = zcv_parse_view_type_name(view_type);
     if (!info) return 0;
-    
+
     uint64_t size = 0;
-    
+
     if (info->is_array) {
         size = info->element_size * array_element_count;
     } else {

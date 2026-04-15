@@ -150,6 +150,7 @@ section .text
 extern _syscall_open
 extern _syscall_write
 extern _syscall_close
+extern _calculate_crc32
 
 global _weave_aki_structure
 global _weave_srv_structure
@@ -200,8 +201,8 @@ global _weave_bin_structure
 %define AKI_ACTFLOW_OFFSET       0x40
 %define AKI_TRUTH_STATIC_OFFSET  0x50
 %define AKI_AETHELA_OFFSET       0x60
-%define AKI_NEXUS_OFFSET         0x80
-%define AKI_MODE_AFFINITY_OFFSET 0xC0
+%define AKI_NEXUS_OFFSET         0x70
+%define AKI_MODE_AFFINITY_OFFSET 0x78
 %define AKI_CRC_OFFSET           0xFC
 
 _weave_aki_structure:
@@ -212,7 +213,7 @@ _weave_aki_structure:
     push r13
     push r14
     push r15
-    sub rsp, 256
+    sub rsp, 288
     
     mov r12, rdi           ; r12 = input struct pointer
     
@@ -240,6 +241,12 @@ _weave_aki_structure:
     mov [rsi], eax
     add rsi, 4
     loop .aki_clear_header
+
+    ; Zero padding scratch buffer (32 bytes at rsp+256)
+    mov qword [rsp + 256], 0
+    mov qword [rsp + 264], 0
+    mov qword [rsp + 272], 0
+    mov qword [rsp + 280], 0
     
     ; =========================================================================
     ; Build AKI Header Fields
@@ -373,47 +380,48 @@ _weave_aki_structure:
     mov [rbx + AKI_AETHELA_OFFSET], r10        ; AethelA offset
     mov [rbx + AKI_AETHELA_OFFSET + 8], r11   ; AethelA size
     
-    ; IdentityNexus: place after AethelA Engine
+    ; IdentityNexus: only publish an offset when a nexus payload will be written.
+    mov rax, [r12 + INPUT_IDENTITY_COUNT_OFF]
+    test rax, rax
+    jz .aki_no_nexus
+
     mov rax, r10
     add rax, r11
-    
-    ; Ensure 16-byte alignment for IdentityNexus
     mov rcx, 16
     add rax, rcx
     dec rax
     xor rdx, rdx
     div rcx
     mul rcx
-    
-    ; Write IdentityNexus offset (symbolic mapping start)
     mov [rbx + AKI_NEXUS_OFFSET], rax
+    jmp .aki_nexus_ready
+
+.aki_no_nexus:
+    mov qword [rbx + AKI_NEXUS_OFFSET], 0
+.aki_nexus_ready:
     
     
     ; =========================================================================
     ; Calculate Total Binary Size
     ; =========================================================================
-    ; Simplified: header (256) + sum of all zone sizes
-    
-    mov eax, AETHEL_HEADER_SIZE  ; eax = 256
-    
-    ; Add ActFlow size (already aligned in r9d)
-    add eax, r9d
-    
-    ; Add all input zone sizes (they will be included in total)
-    mov ecx, [r12 + INPUT_ACTFLOW_SIZE_OFF]
-    add eax, ecx
-    mov ecx, [r12 + INPUT_MIRROR_SIZE_OFF]
-    add eax, ecx
-    mov ecx, [r12 + INPUT_TRUTH_SIZE_OFF]
-    add eax, ecx
-    
-    ; Add safety buffer for alignment overhead
-    add eax, 0x1000
-    
-    ; Cap at 100MB maximum (should never be reached)
-    cmp eax, 0x6400000
-    jle .aki_total_size_ok
-    mov eax, 0x6400000
+    mov rax, [r12 + INPUT_IDENTITY_COUNT_OFF]
+    test rax, rax
+    jz .aki_total_without_nexus
+
+    mov rcx, [rbx + AKI_NEXUS_OFFSET]
+    add rcx, rax
+    mov eax, ecx
+    jmp .aki_total_size_ok
+
+.aki_total_without_nexus:
+    mov rcx, [rbx + AKI_AETHELA_OFFSET]
+    mov rdx, [rbx + AKI_AETHELA_OFFSET + 8]
+    add rcx, rdx
+    mov eax, ecx
+
+    cmp eax, AETHEL_HEADER_SIZE
+    jge .aki_total_size_ok
+    mov eax, AETHEL_HEADER_SIZE
 .aki_total_size_ok:
     
     ; Write total_binary_size (as u32 at offset 0x0C)
@@ -428,31 +436,9 @@ _weave_aki_structure:
     ; Calculate and Write CRC32 over Header (0x00-0xFB, 252 bytes)
     ; =========================================================================
     
-    mov rdi, rbx           ; rdi = header buffer start
-    mov rsi, 0xFC          ; rsi = size to checksum (252 bytes)
-    mov eax, 0xFFFFFFFF    ; eax = initial CRC value
-    mov r9, rsi            ; r9 = remaining bytes
-    
-.aki_crc_loop:
-    test r9, r9
-    jz .aki_crc_done
-    
-    ; Classic CRC32 calculation
-    movzx ecx, byte [rdi]
-    xor ecx, eax
-    and ecx, 0xFF
-    shr eax, 8
-    
-    lea r10, [rel crc32_table]
-    mov ecx, [r10 + rcx*4]  ; Look up table entry
-    xor eax, ecx            ; XOR with current CRC
-    
-    inc rdi
-    dec r9
-    jmp .aki_crc_loop
-    
-.aki_crc_done:
-    xor eax, 0xFFFFFFFF    ; Final XOR
+    mov rdi, rbx           ; arg1 = header buffer start
+    mov rsi, 0xFC          ; arg2 = bytes to checksum (0x00-0xFB)
+    call _calculate_crc32
     mov [rbx + AKI_CRC_OFFSET], eax
     
     ; =========================================================================
@@ -506,9 +492,15 @@ _weave_aki_structure:
     ; If padding needed, write zeros
     test rax, rax
     jz .aki_truth_write
-    
-    ; Simple padding: just skip, assuming file is sparse or we pre-allocated
-    ; For production: write actual zero bytes
+
+    mov rdi, r8
+    lea rsi, [rsp + 256]
+    mov rdx, rax
+    mov [rsp + 272], rdx
+    call _syscall_write
+
+    cmp rax, [rsp + 272]
+    jne .aki_write_error
     
     ; =========================================================================
     ; Write TruthStatic Zone (system AethelID dictionary)
@@ -522,9 +514,10 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_MIRROR_PTR_OFF]
     mov rdx, r11
+    mov [rsp + 272], rdx
     call _syscall_write
     
-    cmp rax, r11
+    cmp rax, [rsp + 272]
     jne .aki_write_error
     
     ; Align to 16-byte boundary
@@ -539,6 +532,15 @@ _weave_aki_structure:
     
     test rax, rax
     jz .aki_aethela_write
+
+    mov rdi, r8
+    lea rsi, [rsp + 256]
+    mov rdx, rax
+    mov [rsp + 272], rdx
+    call _syscall_write
+
+    cmp rax, [rsp + 272]
+    jne .aki_write_error
     
     ; =========================================================================
     ; Write AethelA Compiler Engine Zone (SourceInterpretor, SipWeaver, etc)
@@ -552,20 +554,52 @@ _weave_aki_structure:
     mov rdi, r8
     mov rsi, [r12 + INPUT_TRUTH_PTR_OFF]
     mov rdx, r11
+    mov [rsp + 272], rdx
     call _syscall_write
     
-    cmp rax, r11
+    cmp rax, [rsp + 272]
     jne .aki_write_error
-    
-    ; =========================================================================
-    ; Build IdentityNexus (symbolic table mapping AethelIDs to kernel addresses)
-    ; Simplified: write a placeholder nexus record
-    ; =========================================================================
-    
+
+    ; Align to 16-byte boundary before IdentityNexus when present
+    mov rax, [r12 + INPUT_IDENTITY_COUNT_OFF]
+    test rax, rax
+    jz .aki_nexus_build
+
+    mov rax, r11
+    mov rcx, 16
+    add rax, rcx
+    dec rax
+    xor rdx, rdx
+    div rcx
+    mul rcx
+    sub rax, r11
+
+    test rax, rax
+    jz .aki_nexus_build
+
+    mov rdi, r8
+    lea rsi, [rsp + 256]
+    mov rdx, rax
+    mov [rsp + 272], rdx
+    call _syscall_write
+
+    cmp rax, [rsp + 272]
+    jne .aki_write_error
+
 .aki_nexus_build:
-    ; Calculate padding needed before IdentityNexus
-    ; This would be done in a real implementation
-    
+    mov r11, [r12 + INPUT_IDENTITY_COUNT_OFF]
+    test r11, r11
+    jz .aki_close_file
+
+    mov rdi, r8
+    mov rsi, [r12 + INPUT_IDENTITY_PTR_OFF]
+    mov rdx, r11
+    mov [rsp + 272], rdx
+    call _syscall_write
+
+    cmp rax, [rsp + 272]
+    jne .aki_write_error
+
     ; =========================================================================
     ; Close file
     ; =========================================================================
@@ -589,7 +623,7 @@ _weave_aki_structure:
     mov eax, -1
     
 .aki_cleanup:
-    add rsp, 256
+    add rsp, 288
     pop r15
     pop r14
     pop r13

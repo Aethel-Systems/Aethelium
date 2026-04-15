@@ -86,13 +86,13 @@ extern AETHEL_ASM_ABI uint32_t _calculate_crc32(
  * Input structure for AKI structure weaving from raw buffers
  *
  * The C layer extracts three independent buffers from the compiled code:
- * - ActFlow: Pure x86-64 machine code (microkernel bytecode)
- * - MirrorState: Runtime state data (static initialization data)
- * - ConstantTruth: Read-only configuration and metadata
+ * - ActFlow: Pure machine code (microkernel behavior flow)
+ * - TruthStatic: System metadata / AethelID dictionary payload
+ * - AethelA Logic: Compiler engine payload region
  *
  * The assembly weaver assembles these into a complete binary per
  * [Full Structure] specification from "AethelOS 二进制及目录结构.txt":
- * - Calculate proper alignments (16-byte ActFlow, 4KB ConstantTruth)
+ * - Calculate proper zone offsets and required alignments
  * - Build complete 256-byte header with zone offsets
  * - Construct IdentityNexus (symbol/AethelID mapping table)
  * - Calculate CRC32 over entire structure
@@ -108,6 +108,24 @@ typedef struct {
     uint64_t constant_truth_size;
     uint64_t genesis_point;
     const uint8_t *aethel_id;           /* 32 bytes */
+    const void *reloc_table_ptr;
+    uint64_t reloc_count;
+    const void *identity_table_ptr;
+    uint64_t identity_count;
+    uint64_t trap_hint_count;
+    uint64_t ipc_count;
+    uint64_t min_sip;
+    uint64_t mode_affinity;
+    uint64_t sip_vector;
+    uint64_t target_isa;
+    uint64_t machine_bits;
+    uint64_t endianness;
+    uint64_t abi_kind;
+    uint64_t code_model;
+    uint64_t reloc_width;
+    uint64_t entry_encoding;
+    uint64_t bin_flags;
+    uint64_t bin_entry_offset;
 } AKI_Weave_Input;
 
 typedef struct {

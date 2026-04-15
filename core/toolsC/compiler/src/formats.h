@@ -36,6 +36,7 @@
 #include "pe.h"
 #include "pe_industrial.h"
 #include "rom.h"
+#include "exe_binary_weaver.h"
 
 /**
  * 编译器支持的输出格式枚举

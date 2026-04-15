@@ -63,6 +63,8 @@
 #include "../formats.h"
 #include "../formats/common/format_common.h"
 #include "../formats/efi/pe.h"
+#include "../formats/macho/macho_weaver.h"
+#include "../formats/im4p/im4p_generator.h"
 #include "../middleend/builtin_print.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -92,6 +94,12 @@
 #define FORMAT_BIN  6
 #define FORMAT_PE   7        /* UEFI PE32+ 工业级应用（新增） */
 #define FORMAT_ROM  8        /* ROM 固件镜像（可直接刷写） */
+#define FORMAT_MACHO 9       /* 裸机 Mach-O 固件镜像 (Apple Silicon) */
+#define FORMAT_IM4P 10       /* Image4 Payload 容器 (iBoot + Apple Silicon) */
+#define FORMAT_EXE  11       /* Windows PE32+ Console Executable (独立完整实现) */
+
+#define EXE_PORTAL_IAT_MARK_NTWRITEFILE 0x11F1E1A1U
+#define EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS 0x22F2E2A2U
 
 static int create_temp_file_path(char *path_out, size_t path_out_sz, const char *prefix) {
     if (!path_out || path_out_sz == 0 || !prefix) {
@@ -134,6 +142,73 @@ static int create_temp_file_path(char *path_out, size_t path_out_sz, const char 
         return mkstemp(path_out);
     }
 #endif
+}
+
+static EXE_Section_Data *find_exe_section(EXE_Binary_Weaver_Context *ctx, const char *name) {
+    uint32_t i;
+    if (!ctx || !name) return NULL;
+    for (i = 0; i < ctx->section_count; ++i) {
+        if (strncmp(ctx->sections[i].name, name, sizeof(ctx->sections[i].name)) == 0) {
+            return &ctx->sections[i];
+        }
+    }
+    return NULL;
+}
+
+static uint32_t find_exe_import_iat_rva(const EXE_Binary_Weaver_Context *ctx,
+                                        const char *dll_name,
+                                        const char *function_name) {
+    uint32_t i;
+    if (!ctx || !dll_name || !function_name) return 0U;
+    for (i = 0; i < ctx->import_library_count; ++i) {
+        uint32_t j;
+        const EXE_Import_Library *lib = &ctx->imports[i];
+        if (strncmp(lib->dll_name, dll_name, sizeof(lib->dll_name)) != 0) continue;
+        for (j = 0; j < lib->function_count; ++j) {
+            if (strncmp(lib->functions[j].function_name, function_name, sizeof(lib->functions[j].function_name)) == 0) {
+                return lib->functions[j].iat_rva;
+            }
+        }
+    }
+    return 0U;
+}
+
+static int patch_exe_portal_iat_displacements(uint8_t *code,
+                                              size_t code_size,
+                                              uint32_t text_rva,
+                                              uint32_t ntwritefile_iat_rva,
+                                              uint32_t ntterminateprocess_iat_rva) {
+    size_t i;
+    int saw_write = 0;
+    int saw_terminate = 0;
+    if (!code || code_size < 4 || text_rva == 0U ||
+        ntwritefile_iat_rva == 0U || ntterminateprocess_iat_rva == 0U) {
+        return -1;
+    }
+    for (i = 0; i + 4 <= code_size; ++i) {
+        uint32_t marker = ((uint32_t)code[i]) |
+                          ((uint32_t)code[i + 1] << 8) |
+                          ((uint32_t)code[i + 2] << 16) |
+                          ((uint32_t)code[i + 3] << 24);
+        uint32_t target_rva = 0U;
+        int32_t disp32;
+        if (marker == EXE_PORTAL_IAT_MARK_NTWRITEFILE) {
+            target_rva = ntwritefile_iat_rva;
+            saw_write = 1;
+        } else if (marker == EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS) {
+            target_rva = ntterminateprocess_iat_rva;
+            saw_terminate = 1;
+        } else {
+            continue;
+        }
+        disp32 = (int32_t)((int64_t)target_rva - ((int64_t)text_rva + (int64_t)i + 4));
+        code[i + 0] = (uint8_t)(disp32 & 0xFF);
+        code[i + 1] = (uint8_t)((disp32 >> 8) & 0xFF);
+        code[i + 2] = (uint8_t)((disp32 >> 16) & 0xFF);
+        code[i + 3] = (uint8_t)((disp32 >> 24) & 0xFF);
+        i += 3;
+    }
+    return (saw_write && saw_terminate) ? 0 : -1;
 }
 
 // ============================================================================
@@ -508,6 +583,9 @@ typedef struct {
     /* 新增：库包含支持 (for library source inlining) */
     char *include_libs[32];     /* 库名称列表（如 "std", "auraui"） */
     int include_lib_count;      /* 包含库的数量 */
+    /* Mach-O 及 IM4P 支持 */
+    uint64_t macho_phys_base;   /* --base <addr>: Mach-O 物理基址 (default: 0x800000000) */
+    const char *im4p_identifier; /* --is im4p <name>: IM4P 标识符名称 (default: "krnl") */
 } CompilerOptions;
 
 static int parse_u64(const char *text, uint64_t *out) {
@@ -562,7 +640,15 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  Dump:    %s --dump-reloc-dna <input.let> [-o <output.txt>]\n", prog);
     fprintf(stderr, "  ISO:     %s --iso -o <output.iso> --kernel <kernel> --efi <boot.efi> [--size <MB>]\n", prog);
     fprintf(stderr, "\nOutput Formats:\n");
-    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|bin|rom\n");
+    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p\n");
+    fprintf(stderr, "\nBare-metal Mach-O (Apple Silicon) Options:\n");
+    fprintf(stderr, "  --emit macho         Generate bare-metal Mach-O firmware image\n");
+    fprintf(stderr, "  --base <address>     Physical load address (default: 0x800000000)\n");
+    fprintf(stderr, "                       Example: aethelc kernel.ae --emit macho --base 0x800000000\n");
+    fprintf(stderr, "\nIM4P Image4 Payload (iBoot) Options:\n");
+    fprintf(stderr, "  --emit im4p          Generate Image4 container for iBoot\n");
+    fprintf(stderr, "  --is im4p <name>     Payload identifier (default: krnl)\n");
+    fprintf(stderr, "                       Example: aethelc kernel.ae --emit im4p --is im4p krnl\n");
     fprintf(stderr, "\nCompiler Architecture:\n");
     fprintf(stderr, "  .ae -> AETB         Direct compile path for application runtime binaries\n");
     fprintf(stderr, "  .ae -> LET          Logical Embryo (the only intermediate format)\n");
@@ -683,6 +769,9 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     /* 库包含初始化 */
     opts->include_lib_count = 0;
     memset(opts->include_libs, 0, sizeof(opts->include_libs));
+    /* Mach-O 和 IM4P 初始化 */
+    opts->macho_phys_base = 0x800000000ULL;  /* Apple Silicon 标准物理基址 */
+    opts->im4p_identifier = "krnl";           /* iBoot 期望的标准标识符 */
     
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -740,7 +829,7 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                 if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
                     strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
                     strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
-                    strcmp(fmt, "rom") == 0) {
+                    strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0) {
                     opts->output_format = fmt;
                     opts->emit_format = fmt;
                 } else {
@@ -812,6 +901,28 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                 opts->include_libs[opts->include_lib_count++] = argv[++i];
             } else if (opts->include_lib_count >= 32) {
                 fprintf(stderr, "Error: Too many libraries to include (max 32)\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--is") == 0) {
+            /* --is im4p <identifier>: 指定 IM4P 标识符 */
+            if (i + 2 < argc && strcmp(argv[i+1], "im4p") == 0) {
+                opts->emit_format = "im4p";
+                opts->output_format = "im4p";
+                opts->im4p_identifier = argv[i+2];
+                i += 2;
+            } else {
+                fprintf(stderr, "Error: --is requires 'im4p <identifier>'\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--base") == 0) {
+            /* --base <address>: Mach-O 物理基址 (16进制格式) */
+            if (i + 1 < argc) {
+                if (parse_u64(argv[++i], &opts->macho_phys_base) != 0) {
+                    fprintf(stderr, "Error: --base requires a valid hexadecimal address\n");
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Error: --base requires an address argument\n");
                 return 1;
             }
         } else if (strncmp(argv[i], "-O", 2) == 0) {
@@ -900,12 +1011,32 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             fprintf(stderr, "Error: 64-bit ROM firmware requires --isa x86_64\n");
             return 1;
         }
-        if ((opts->machine_bits == 16 || opts->machine_bits == 32) && strcmp(opts->isa, "x86") != 0) {
-            fprintf(stderr, "Error: 16/32-bit ROM firmware requires --isa x86\n");
+    }
+
+    /* Mach-O 验证：必须为 aarch64 + 64位 */
+    if (opts->emit_format && strcmp(opts->emit_format, "macho") == 0) {
+        if (strcmp(opts->isa, "aarch64") != 0) {
+            fprintf(stderr, "Error: Mach-O firmware requires --isa aarch64\n");
             return 1;
         }
-        if (opts->has_bin_entry_offset) {
-            fprintf(stderr, "Error: ROM firmware does not accept --bin-entry (reset vector is fixed)\n");
+        if (opts->machine_bits != 64) {
+            fprintf(stderr, "Error: Mach-O firmware requires --machine-bits 64\n");
+            return 1;
+        }
+    }
+
+    /* IM4P 验证：要求 Mach-O 作为载荷生成器 */
+    if (opts->emit_format && strcmp(opts->emit_format, "im4p") == 0) {
+        if (strcmp(opts->isa, "aarch64") != 0) {
+            fprintf(stderr, "Error: IM4P container requires --isa aarch64\n");
+            return 1;
+        }
+        if (opts->machine_bits != 64) {
+            fprintf(stderr, "Error: IM4P container requires --machine-bits 64\n");
+            return 1;
+        }
+        if (!opts->im4p_identifier || opts->im4p_identifier[0] == '\0') {
+            fprintf(stderr, "Error: IM4P container requires --is im4p <identifier>\n");
             return 1;
         }
     }
@@ -1386,8 +1517,11 @@ static int run_compiler(CompilerOptions *opts) {
         else if (strcmp(opts->emit_format, "hda") == 0) target_format = FORMAT_HDA;
         else if (strcmp(opts->emit_format, "efi") == 0 || strcmp(opts->emit_format, "uefi_app") == 0) target_format = FORMAT_EFI;
         else if (strcmp(opts->emit_format, "pe") == 0) target_format = FORMAT_PE;
+        else if (strcmp(opts->emit_format, "exe") == 0) target_format = FORMAT_EXE;
         else if (strcmp(opts->emit_format, "bin") == 0) target_format = FORMAT_BIN;
         else if (strcmp(opts->emit_format, "rom") == 0) target_format = FORMAT_ROM;
+        else if (strcmp(opts->emit_format, "macho") == 0) target_format = FORMAT_MACHO;
+        else if (strcmp(opts->emit_format, "im4p") == 0) target_format = FORMAT_IM4P;
         else target_format = FORMAT_AETB;
     } else if (strstr(output_file, ".aki") != NULL) {
         target_format = FORMAT_AKI;
@@ -1399,10 +1533,16 @@ static int run_compiler(CompilerOptions *opts) {
         target_format = FORMAT_HDA;
     } else if (strstr(output_file, ".EFI") != NULL || strstr(output_file, ".efi") != NULL) {
         target_format = FORMAT_EFI;
+    } else if (strstr(output_file, ".exe") != NULL || strstr(output_file, ".EXE") != NULL) {
+        target_format = FORMAT_EXE;
     } else if (strstr(output_file, ".bin") != NULL) {
         target_format = FORMAT_BIN;
     } else if (strstr(output_file, ".rom") != NULL) {
         target_format = FORMAT_ROM;
+    } else if (strstr(output_file, ".macho") != NULL) {
+        target_format = FORMAT_MACHO;
+    } else if (strstr(output_file, ".im4p") != NULL) {
+        target_format = FORMAT_IM4P;
     }
     
     if (opts->verbose) {
@@ -1414,19 +1554,25 @@ static int run_compiler(CompilerOptions *opts) {
             case FORMAT_HDA: fmt_name = "HDA"; break;
             case FORMAT_EFI: fmt_name = "PE32+ EFI (Embedded AETB)"; break;
             case FORMAT_PE: fmt_name = "PE32+ (Industrial Grade UEFI)"; break;
+            case FORMAT_EXE: fmt_name = "EXE+ (Windows Console Executable)"; break;
             case FORMAT_BIN: fmt_name = "BIN"; break;
             case FORMAT_ROM: fmt_name = "ROM (Flash Image)"; break;
+            case FORMAT_MACHO: fmt_name = "Mach-O (Bare-metal Apple Silicon)"; break;
+            case FORMAT_IM4P: fmt_name = "IM4P (Image4 Payload for iBoot)"; break;
         }
         printf("[INFO] 目标格式: %s\n", fmt_name);
     }
 
     if ((target_format == FORMAT_EFI ||
          target_format == FORMAT_PE ||
+         target_format == FORMAT_EXE ||
          target_format == FORMAT_AKI ||
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
          target_format == FORMAT_BIN ||
-         target_format == FORMAT_ROM) &&
+         target_format == FORMAT_ROM ||
+         target_format == FORMAT_MACHO ||
+         target_format == FORMAT_IM4P) &&
         strcmp(opts->mode, "architect") != 0) {
         effective_mode = "architect";
         if (opts->verbose) {
@@ -1439,7 +1585,9 @@ static int run_compiler(CompilerOptions *opts) {
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
          target_format == FORMAT_BIN ||
-         target_format == FORMAT_ROM) &&
+         target_format == FORMAT_ROM ||
+         target_format == FORMAT_MACHO ||
+         target_format == FORMAT_IM4P) &&
         strcmp(opts->target_mode, "kernel") != 0) {
         effective_target_mode = "kernel";
         if (opts->verbose) {
@@ -1543,7 +1691,10 @@ static int run_compiler(CompilerOptions *opts) {
     gen->use_syscall = (target_format == FORMAT_AETB || target_format == FORMAT_AKI || 
                         target_format == FORMAT_SRV || target_format == FORMAT_HDA ||
                         target_format == FORMAT_ROM);
-    
+    if (opts->entry_point && opts->entry_point[0] != '\0' && strcmp(opts->entry_point, "main") != 0) {
+        gen->entry_point_name = opts->entry_point;
+    }
+
     if (codegen_set_target(gen, opts->isa, opts->machine_bits) != 0) {
         fprintf(stderr, "Error: unsupported Stage1 target combination: isa=%s bits=%d\n", opts->isa, opts->machine_bits);
         codegen_destroy(gen);
@@ -1593,7 +1744,7 @@ static int run_compiler(CompilerOptions *opts) {
             free_asm_lines(rom_asm_lines, rom_asm_count);
         }
         
-        /* [TODO-03] 预处理阶段：检查禁忌头文件 */
+        /* [任务实现-03] 预处理阶段：检查禁忌头文件 */
         if (preprocessor_scan_for_forbidden_includes(source) > 0) {
             fprintf(stderr, "编译已被罢工，退出码: %d\n", COMPILER_STRIKE_CODE);
             free(source);
@@ -1796,20 +1947,19 @@ static int run_compiler(CompilerOptions *opts) {
     }
     
     /* 对于PE格式，计算entry_point_offset */
-    if (target_format == FORMAT_PE) {
-        /* 从binary_data header中提取entry point offset */
+    /* 定位到 gen_expression 的循环之后，修改 entry_point_offset 的逻辑 */
+    if (target_format == FORMAT_PE || target_format == FORMAT_EXE) {
         if (binary_size >= sizeof(AethelBinaryHeader)) {
-            /* 对于bootloader，entry point通常从act_flow_offset的第一条指令开始 */
-            /* 但如果提供了显式的entry offset，使用它 */
+            const AethelBinaryHeader *hdr = (const AethelBinaryHeader *)binary_data;
+            /* 
+            * 修复：必须提取编译器阶段生成的 genesis_point 偏移量，
+            * 而不是简单地假设 entry point 为 0。
+            * 这确保了 PE Header 的 AddressOfEntryPoint 指向正确的函数地址。
+            */
             if (opts->has_bin_entry_offset) {
                 entry_offset = (uint32_t)opts->bin_entry_offset;
             } else {
-                /* 默认：假设entry point在code section的开始（偏移0）
-                 * 这是标准UEFI EFI_IMAGE_ENTRY_POINT的位置 */
-                entry_offset = 0;
-            }
-            if (opts->verbose) {
-                fprintf(stderr, "[PE-IND] Entry point offset will be: 0x%x\n", entry_offset);
+                entry_offset = (uint32_t)hdr->genesis_point;
             }
         }
     }
@@ -1942,6 +2092,238 @@ static int run_compiler(CompilerOptions *opts) {
         }
         
         format_result = pe_industrial_generate_efi(&pe_input);
+    }
+    else if (target_format == FORMAT_EXE) {
+        uint8_t *probe_image = NULL;
+        uint32_t probe_image_size = 0U;
+        EXE_Section_Data *text_section;
+        uint32_t ntwritefile_iat_rva;
+        uint32_t ntterminateprocess_iat_rva;
+        if (opts->verbose) {
+            printf("[INFO] 使用 EXE Binary Weaver 生成 Windows 控制台应用: %s\n", output_file);
+        }
+        
+        /* Windows PE32+ Console Executable (独立完整实现)
+         * 从三个独立的Zone生成标准Windows EXE格式
+         */
+        
+        EXE_Binary_Weaver_Context weaver_ctx;
+        if (EXE_Weaver_Initialize(&weaver_ctx, 
+                                 EXE_WIN64_IMAGE_BASE_DEFAULT,
+                                 EXE_WIN64_SUBSYSTEM_WINDOWS_CUI) != 0) {
+            fprintf(stderr, "Error: Failed to initialize EXE weaver context\n");
+            free(binary_data);
+            return 1;
+        }
+
+        if (EXE_Weaver_AddImport(&weaver_ctx, EXE_IMPORT_NTDLL, "NtWriteFile", NULL) != 0 ||
+            EXE_Weaver_AddImport(&weaver_ctx, EXE_IMPORT_NTDLL, "NtTerminateProcess", NULL) != 0) {
+            fprintf(stderr, "Error: Failed to register required ntdll imports for EXE portal bootstrap\n");
+            EXE_Weaver_Cleanup(&weaver_ctx);
+            free(binary_data);
+            return 1;
+        }
+        
+        /* Add code section (.text|actflow) */
+        if (EXE_Weaver_AddSection(&weaver_ctx,
+                                 ".text",
+                                 code,
+                                 code_size,
+                                 EXE_WIN64_SECT_TEXT,
+                                 EXE_WIN64_SECTION_ALIGNMENT) != 0) {
+            fprintf(stderr, "Error: Failed to add .text section\n");
+            free(binary_data);
+            return 1;
+        }
+        
+        /* Add data section (.data|state) */
+        if (mirror_data && mirror_size > 0) {
+            if (EXE_Weaver_AddSection(&weaver_ctx,
+                                     ".data",
+                                     mirror_data,
+                                     mirror_size,
+                                     EXE_WIN64_SECT_DATA,
+                                     EXE_WIN64_SECTION_ALIGNMENT) != 0) {
+                fprintf(stderr, "Error: Failed to add .data section\n");
+                free(binary_data);
+                return 1;
+            }
+        }
+        
+        /* Add constant section (.rdata|mirror) */
+        if (constant_data && constant_size > 0) {
+            if (EXE_Weaver_AddSection(&weaver_ctx,
+                                     ".rdata",
+                                     constant_data,
+                                     constant_size,
+                                     EXE_WIN64_SECT_RDATA,
+                                     EXE_WIN64_SECTION_ALIGNMENT) != 0) {
+                fprintf(stderr, "Error: Failed to add .rdata section\n");
+                free(binary_data);
+                return 1;
+            }
+        }
+        
+        /* Set entry point (from genesis_point in binary header) */
+        EXE_Weaver_SetEntryPoint(&weaver_ctx, entry_offset);
+        
+        /* Set DLL characteristics */
+        EXE_Weaver_SetDllCharacteristics(&weaver_ctx,
+                                        EXE_WIN64_DLLCHAR_AETHELIUM_DEFAULT);
+
+        if (EXE_Weaver_Finalize(&weaver_ctx, &probe_image, &probe_image_size) != 0) {
+            fprintf(stderr, "Error: Failed to finalize EXE layout for portal bootstrap patching\n");
+            EXE_Weaver_Cleanup(&weaver_ctx);
+            free(binary_data);
+            return 1;
+        }
+        free(probe_image);
+
+        text_section = find_exe_section(&weaver_ctx, ".text");
+        ntwritefile_iat_rva = find_exe_import_iat_rva(&weaver_ctx, EXE_IMPORT_NTDLL, "NtWriteFile");
+        ntterminateprocess_iat_rva = find_exe_import_iat_rva(&weaver_ctx, EXE_IMPORT_NTDLL, "NtTerminateProcess");
+        if (!text_section ||
+            patch_exe_portal_iat_displacements(text_section->raw_data,
+                                               text_section->raw_size,
+                                               text_section->virtual_address,
+                                               ntwritefile_iat_rva,
+                                               ntterminateprocess_iat_rva) != 0) {
+            fprintf(stderr, "Error: Failed to patch EXE portal bootstrap imports into .text\n");
+            EXE_Weaver_Cleanup(&weaver_ctx);
+            free(binary_data);
+            return 1;
+        }
+
+        /* Write to file */
+        if (EXE_Weaver_WriteToFile(&weaver_ctx, output_file) != 0) {
+            fprintf(stderr, "Error: Failed to write EXE file\n");
+            EXE_Weaver_Cleanup(&weaver_ctx);
+            free(binary_data);
+            return 1;
+        }
+        
+        EXE_Weaver_Cleanup(&weaver_ctx);
+        format_result = 0;
+        
+        if (opts->verbose) {
+            printf("[INFO] EXE 二进制文件生成成功\n");
+        }
+    }
+    else if (target_format == FORMAT_MACHO) {
+        if (opts->verbose) {
+            printf("[INFO] 生成裸机 Mach-O 固件镜像（Apple Silicon）: %s\n", output_file);
+            printf("[INFO] Physical load address: 0x%llx\n", (unsigned long long)opts->macho_phys_base);
+        }
+        
+        /* 完整性检查：ActFlow 必须存在 */
+        if (!code || code_size == 0) {
+            fprintf(stderr, "Error: ActFlow (code) zone is required for Mach-O generation\n");
+            free(binary_data);
+            return 1;
+        }
+        
+        format_result = macho_generate_image(output_file,
+                                            code, code_size,
+                                            mirror_data, mirror_size,
+                                            constant_data, constant_size,
+                                            opts->macho_phys_base);
+        
+        if (format_result == 0 && opts->verbose) {
+            printf("[INFO] Mach-O firmware image generated successfully\n");
+        }
+    }
+    else if (target_format == FORMAT_IM4P) {
+        if (opts->verbose) {
+            printf("[INFO] 生成 IM4P Image4 容器（iBoot）: %s\n", output_file);
+            printf("[INFO] Payload identifier: '%s'\n", opts->im4p_identifier);
+        }
+        
+        /* IM4P 工作流：
+         * 1. 从三个区块生成 Mach-O
+         * 2. 将 Mach-O 包装在 ASN.1 DER IM4P 容器中
+         */
+        
+        /* 完整性检查 */
+        if (!code || code_size == 0) {
+            fprintf(stderr, "Error: ActFlow (code) zone is required for IM4P generation\n");
+            free(binary_data);
+            return 1;
+        }
+        
+        if (!opts->im4p_identifier || opts->im4p_identifier[0] == '\0') {
+            fprintf(stderr, "Error: IM4P identifier not set (use --is im4p <name>)\n");
+            free(binary_data);
+            return 1;
+        }
+        
+        /* 第 1 步：生成临时 Mach-O */
+        char temp_macho[512];
+        int temp_fd = create_temp_file_path(temp_macho, sizeof(temp_macho), "amacho");
+        if (temp_fd < 0) {
+            fprintf(stderr, "Error: Failed to create temporary Mach-O file\n");
+            free(binary_data);
+            return 1;
+        }
+        close(temp_fd);
+        
+        format_result = macho_generate_image(temp_macho,
+                                            code, code_size,
+                                            mirror_data, mirror_size,
+                                            constant_data, constant_size,
+                                            opts->macho_phys_base);
+        
+        if (format_result != 0) {
+            fprintf(stderr, "Error: Mach-O generation failed during IM4P workflow\n");
+            unlink(temp_macho);
+            free(binary_data);
+            return 1;
+        }
+        
+        /* 第 2 步：读取临时 Mach-O 文件 */
+        FILE *temp_macho_file = fopen(temp_macho, "rb");
+        if (!temp_macho_file) {
+            fprintf(stderr, "Error: Failed to read temporary Mach-O file\n");
+            unlink(temp_macho);
+            free(binary_data);
+            return 1;
+        }
+        
+        fseek(temp_macho_file, 0, SEEK_END);
+        size_t macho_file_size = ftell(temp_macho_file);
+        fseek(temp_macho_file, 0, SEEK_SET);
+        
+        uint8_t *macho_buffer = (uint8_t*)malloc(macho_file_size);
+        if (!macho_buffer) {
+            fprintf(stderr, "Error: Out of memory reading Mach-O\n");
+            fclose(temp_macho_file);
+            unlink(temp_macho);
+            free(binary_data);
+            return 1;
+        }
+        
+        size_t macho_read = fread(macho_buffer, 1, macho_file_size, temp_macho_file);
+        fclose(temp_macho_file);
+        
+        if (macho_read != macho_file_size) {
+            fprintf(stderr, "Error: Partial read of Mach-O file (%zu / %zu bytes)\n",
+                    macho_read, macho_file_size);
+            free(macho_buffer);
+            unlink(temp_macho);
+            free(binary_data);
+            return 1;
+        }
+        
+        /* 第 3 步：生成 IM4P 容器 */
+        format_result = im4p_generate(output_file,
+                                     macho_buffer, macho_file_size,
+                                     opts->im4p_identifier);
+        
+        free(macho_buffer);
+        unlink(temp_macho);
+        
+        if (format_result == 0 && opts->verbose) {
+            printf("[INFO] IM4P container generated successfully\n");
+        }
     }
     else {
         /* 格式为AETB - 直接复制到最终文件 */

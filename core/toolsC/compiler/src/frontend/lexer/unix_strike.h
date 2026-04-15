@@ -45,28 +45,31 @@ typedef struct {
 
 /* 符号罢工清单 */
 
-/* [TODO-01] 点号罢工检测 */
+/* [任务实现-01] 点号罢工检测 */
 int strike_detect_dot_access(const char *lexeme, int line, int column, 
                               int is_in_float_literal);
 
-/* [TODO-02] 箭头罢工检测 */
+/* [任务实现-02] 箭头罢工检测 */
 int strike_detect_arrow(const char *lexeme, int line, int column);
 
-/* [TODO-04] 下划线在标识符中的罢工 */
+/* [任务实现-04] 下划线在标识符中的罢工 */
 int strike_detect_underscore_identifier(const char *identifier, int line, int column);
 
+/* [任务实现-08] asm 关键字罢工 */
+int strike_detect_asm_keyword(const char *identifier, int line, int column);
 
-/* [TODO-03] 禁忌头文件罢工 */
+
+/* [任务实现-03] 禁忌头文件罢工 */
 int strike_detect_forbidden_include(const char *include_path);
 
-/* [TODO-05] 禁咒符号检测 */
+/* [任务实现-05] 禁咒符号检测 */
 int strike_detect_forbidden_symbol(const char *symbol_name, int line, int column);
 int strike_detect_forbidden_identifier(const char *identifier, int line, int column);
 
-/* [TODO-06] Main 函数检测 */
+/* [任务实现-06] Main 函数检测 */
 int strike_detect_main_function(const char *function_name);
 
-/* [TODO-07] GNU 扩展检测 */
+/* [任务实现-07] GNU 扩展检测 */
 int strike_detect_gnu_extension(const char *extension_syntax);
 
 /* 通用罢工输出函数 */

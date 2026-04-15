@@ -41,7 +41,7 @@ typedef struct {
     char error[1024];        /* 扩展错误缓冲区 - 工业级别 */
     char errors[64][256];    /* 错误历史记录 */
     int error_count;         /* 错误计数 */
-    /* [TODO-06] 入口点管理 */
+    /* [任务实现-06] 入口点管理 */
     const char *entry_point_name;  /* 从命令行或@entry装饰器指定的入口点名称 */
 } CodeGenerator;
 

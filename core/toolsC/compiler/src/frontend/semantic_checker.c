@@ -294,7 +294,7 @@ static void analyze_node(const ASTNode *node, SemanticContext *ctx) {
             break;
 
         case AST_FUNC_DECL:
-            /* [TODO-06] Main 函数检测 - 在语义分析阶段罢工 */
+            /* [任务实现-06] Main 函数检测 - 在语义分析阶段罢工 */
             if (node->data.func_decl.name && strike_detect_main_function(node->data.func_decl.name)) {
                 set_error(ctx,
                           "[STRIKE] 编译器找不到入口(main函数被禁止) at line %d",

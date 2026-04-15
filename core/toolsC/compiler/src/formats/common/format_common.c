@@ -297,9 +297,12 @@ AethelID aethel_id_generate(const char *id_type, const uint8_t *encrypted_payloa
         master_key = default_key;
     }
     
-    /* 构造AethelID：[版本:4b][时间戳:48b][随机熵:96b][加密负载:96b][校验:12b] */
-    uint32_t version = 0x1;  /* Version A (0x1 in this context) */
-    uint64_t timestamp_ms = (uint64_t)time(NULL) * 1000;  /* 毫秒级时间戳 */
+    /* 构造AethelID：[版本:4b][时间戳:48b][随机熵:96b][加密负载:96b][校验:12b]
+       文档要求版本高 4 位固定为 A(1010)，时间戳为 AethelOS 纪元起的毫秒数。 */
+    uint32_t version = 0xA;
+    uint64_t unix_ms = (uint64_t)time(NULL) * 1000;
+    uint64_t epoch_ms = (uint64_t)AETHEL_EPOCH_TIMESTAMP * 1000;
+    uint64_t timestamp_ms = (unix_ms > epoch_ms) ? (unix_ms - epoch_ms) : 0;
     
     /* 字节级写入（big-endian风格） */
     id.bytes[0] = (version << 4) & 0xF0;  /* 版本号在高4位 */
@@ -346,7 +349,7 @@ AethelID aethel_id_generate(const char *id_type, const uint8_t *encrypted_payloa
 int aethel_id_verify(const AethelID *id, const uint8_t *master_key) {
     if (!id) return -1;
 
-    if (((id->bytes[0] >> 4) & 0x0Fu) != 0x01u) {
+    if (((id->bytes[0] >> 4) & 0x0Fu) != 0x0Au) {
         fprintf(stderr, "[AethelID] Verification failed: unsupported version nibble\n");
         return -1;
     }
