@@ -6,6 +6,7 @@
 **Aethelium** 是一个独立的、自洽的系统编程语言工具链。它摒弃了传统的“编译器-汇编器-链接器”繁琐流程，专注于为 **UEFI 环境** 和 **裸机 (Bare-metal)** 开发提供极致精简的构建方案。
 
 本仓库包含 Aethelium 的**自举核心 (Bootstrap Core)**，能够在宿主机（macOS/Linux）上直接生成目标架构的原生机器码或 UEFI PE 可执行文件，无需依赖标准对象文件（.obj/.o）或外部链接器。
+此语言的Windows核心库在[AELibrary](https://github.com/Aethel-Systems/AELibrary)
 
 ---
 
@@ -27,7 +28,7 @@ Aethelium/
 └── core/                   # 核心工具链源码
     ├── toolsC/             # [Frontend] 编译器前端与逻辑填充层
     │   ├── include/        #   - 核心头文件 (二进制格式规范、AEFS 协议)
-    │   ├── aetb/           #   - AETB 中间格式生成引擎
+    │   ├── aetb/           #   - AETB 目标格式生成引擎
     │   ├── compiler/       #   - 词法/语法分析与代码生成主逻辑
     │   └── mkiso/aefs/     #   - 引导介质与文件系统支持
     └── toolsASM/           # [Backend] 二进制织机与汇编发射层
@@ -52,6 +53,8 @@ Aethelium/
 *源码编译支持架构：Darwin (macOS) x86_64/arm64, 最终产物支持：macOSx86_64/arm64和windows x86_64*
 
 ### 编译命令
+
+Windows使用库文件请添加环境变量：`[Environment]::SetEnvironmentVariable("AELibraryPATH", "C:\Your\AELibrary\Path", "User")`
 
 在仓库根目录下执行：
 
@@ -123,7 +126,7 @@ func efi/main(image/handle: ptr<Void>, sys/table: ptr<EFI/SystemTable>) : UInt64
 
 ## ⚠️ 说明
 
-*   **目标产物**: 本工具链生成的二进制文件通常为 **Aethelium Native** 、**x86机器码** 格式或 **UEFI PE** 格式，无法直接在 Windows 或 Linux 宿主机上运行（除非在虚拟机或裸机环境中）。
+*   **目标产物**: 本工具链生成的二进制文件通常为 **Aethelium Native** 、**x86机器码** 格式或 **UEFI PE** 格式，最新源码已支持使用ntdll.dll的EXE发射，无法在linux/macOS等类unix环境运行。
 *   **交叉编译**: 本仓库提供的工具链本质上是运行在宿主机上的交叉编译器 (Cross-Compiler)。
 *   **拒绝POSIX**: Aethelium永远不会在宿主机上自举，Aethelium只会在将来出现无unix、无posix、去C化的新系统重写自己
 

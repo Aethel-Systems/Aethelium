@@ -73,6 +73,7 @@
 #include <time.h>
 #include <unistd.h>
 #include <ctype.h>
+#include <dirent.h>
 #ifndef _WIN32
 #include <sys/wait.h>
 #endif
@@ -98,8 +99,112 @@
 #define FORMAT_IM4P 10       /* Image4 Payload 容器 (iBoot + Apple Silicon) */
 #define FORMAT_EXE  11       /* Windows PE32+ Console Executable (独立完整实现) */
 
-#define EXE_PORTAL_IAT_MARK_NTWRITEFILE 0x11F1E1A1U
-#define EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS 0x22F2E2A2U
+#define EXE_PORTAL_IAT_MARK_NTWRITEFILE               0x11F1E1A1U
+#define EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS        0x22F2E2A2U
+#define EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORY     0x33F3E3B1U
+#define EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORYEX   0x33F3E3B2U
+#define EXE_HOST_IAT_MARK_NTFREEVIRTUALMEMORY         0x33F3E3B3U
+#define EXE_HOST_IAT_MARK_NTPROTECTVIRTUALMEMORY      0x33F3E3B4U
+#define EXE_HOST_IAT_MARK_NTQUERYVIRTUALMEMORY        0x33F3E3B5U
+#define EXE_HOST_IAT_MARK_NTLOCKVIRTUALMEMORY         0x33F3E3B6U
+#define EXE_HOST_IAT_MARK_NTUNLOCKVIRTUALMEMORY       0x33F3E3B7U
+#define EXE_HOST_IAT_MARK_NTCREATETHREADEX            0x33F3E3B8U
+#define EXE_HOST_IAT_MARK_NTCREATEFILE                0x33F3E3B9U
+#define EXE_HOST_IAT_MARK_NTREADFILE                  0x33F3E3BAU
+#define EXE_HOST_IAT_MARK_NTCREATEEVENT               0x33F3E3BBU
+#define EXE_HOST_IAT_MARK_NTWAITFORSINGLEOBJECT       0x33F3E3BCU
+#define EXE_HOST_IAT_MARK_NTDELAYEXECUTION            0x33F3E3BDU
+#define EXE_HOST_IAT_MARK_NTREMOVEIOCOMPLETION        0x33F3E3BEU
+#define EXE_HOST_IAT_MARK_REGISTERCLASSA              0x44F4E4C1U
+#define EXE_HOST_IAT_MARK_CREATEWINDOWEXA             0x44F4E4C2U
+#define EXE_HOST_IAT_MARK_DEFWINDOWPROCA              0x44F4E4C3U
+#define EXE_HOST_IAT_MARK_SHOWWINDOW                  0x44F4E4C4U
+#define EXE_HOST_IAT_MARK_UPDATEWINDOW                0x44F4E4C5U
+#define EXE_HOST_IAT_MARK_GETMESSAGEA                 0x44F4E4C6U
+#define EXE_HOST_IAT_MARK_TRANSLATEMESSAGE            0x44F4E4C7U
+#define EXE_HOST_IAT_MARK_DISPATCHMESSAGEA            0x44F4E4C8U
+#define EXE_HOST_IAT_MARK_POSTQUITMESSAGE             0x44F4E4C9U
+#define EXE_HOST_IAT_MARK_LOADCURSORA                 0x44F4E4CAU
+#define EXE_HOST_IAT_MARK_SETTIMER                    0x44F4E4CBU
+#define EXE_HOST_IAT_MARK_KILLTIMER                   0x44F4E4CCU
+#define EXE_HOST_IAT_MARK_SETWINDOWTEXTA              0x44F4E4CDU
+#define EXE_HOST_IAT_MARK_MESSAGEBOXA                 0x44F4E4CEU
+#define EXE_HOST_IAT_MARK_NTSETEVENT                  0x55F5E5D1U
+#define EXE_HOST_IAT_MARK_NTRESETEVENT                0x55F5E5D2U
+#define EXE_HOST_IAT_MARK_NTWAITFORMULTIPLEOBJECTS    0x55F5E5D3U
+#define EXE_HOST_IAT_MARK_NTSIGNALANDWAIT             0x55F5E5D4U
+#define EXE_HOST_IAT_MARK_NTOPENPROCESS               0x55F5E5D5U
+#define EXE_HOST_IAT_MARK_NTQUERYINFORMATIONPROCESS   0x55F5E5D6U
+#define EXE_HOST_IAT_MARK_NTQUERYSYSTEMINFORMATION    0x55F5E5D7U
+#define EXE_HOST_IAT_MARK_RTLGETVERSION               0x55F5E5D8U
+#define EXE_HOST_IAT_MARK_NTCREATESECTION             0x55F5E5D9U
+#define EXE_HOST_IAT_MARK_NTMAPVIEWOFSECTION          0x55F5E5DAU
+#define EXE_HOST_IAT_MARK_NTUNMAPVIEWOFSECTION        0x55F5E5DBU
+#define EXE_HOST_IAT_MARK_NTQUERYINFORMATIONFILE      0x55F5E5DCU
+#define EXE_HOST_IAT_MARK_NTDEVICEIOCONTROLFILE       0x55F5E5DDU
+#define EXE_HOST_IAT_MARK_NTOPENFILE                  0x55F5E5DEU
+#define EXE_HOST_IAT_MARK_NTCREATEUSERPROCESS         0x55F5E5DFU
+#define EXE_HOST_IAT_MARK_LDRLOADDLL                  0x66F6E6A1U
+#define EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS      0x66F6E6A2U
+#define EXE_HOST_IAT_MARK_RTLINITUNICODESTRING        0x66F6E6A3U
+
+typedef struct {
+    const char *dll_name;
+    const char *function_name;
+    uint32_t marker;
+    int gui_import;
+} ExeImportPatchSpec;
+
+static const ExeImportPatchSpec g_exe_import_patch_specs[] = {
+    { EXE_IMPORT_NTDLL, "NtWriteFile", EXE_PORTAL_IAT_MARK_NTWRITEFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtTerminateProcess", EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS, 0 },
+    { EXE_IMPORT_NTDLL, "NtAllocateVirtualMemory", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtAllocateVirtualMemoryEx", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORYEX, 0 },
+    { EXE_IMPORT_NTDLL, "NtFreeVirtualMemory", EXE_HOST_IAT_MARK_NTFREEVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtProtectVirtualMemory", EXE_HOST_IAT_MARK_NTPROTECTVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtQueryVirtualMemory", EXE_HOST_IAT_MARK_NTQUERYVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtLockVirtualMemory", EXE_HOST_IAT_MARK_NTLOCKVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtUnlockVirtualMemory", EXE_HOST_IAT_MARK_NTUNLOCKVIRTUALMEMORY, 0 },
+    { EXE_IMPORT_NTDLL, "NtCreateThreadEx", EXE_HOST_IAT_MARK_NTCREATETHREADEX, 0 },
+    { EXE_IMPORT_NTDLL, "NtCreateFile", EXE_HOST_IAT_MARK_NTCREATEFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtReadFile", EXE_HOST_IAT_MARK_NTREADFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtCreateEvent", EXE_HOST_IAT_MARK_NTCREATEEVENT, 0 },
+    { EXE_IMPORT_NTDLL, "NtSetEvent", EXE_HOST_IAT_MARK_NTSETEVENT, 0 },
+    { EXE_IMPORT_NTDLL, "NtResetEvent", EXE_HOST_IAT_MARK_NTRESETEVENT, 0 },
+    { EXE_IMPORT_NTDLL, "NtWaitForSingleObject", EXE_HOST_IAT_MARK_NTWAITFORSINGLEOBJECT, 0 },
+    { EXE_IMPORT_NTDLL, "NtWaitForMultipleObjects", EXE_HOST_IAT_MARK_NTWAITFORMULTIPLEOBJECTS, 0 },
+    { EXE_IMPORT_NTDLL, "NtSignalAndWaitForSingleObject", EXE_HOST_IAT_MARK_NTSIGNALANDWAIT, 0 },
+    { EXE_IMPORT_NTDLL, "NtDelayExecution", EXE_HOST_IAT_MARK_NTDELAYEXECUTION, 0 },
+    { EXE_IMPORT_NTDLL, "NtRemoveIoCompletion", EXE_HOST_IAT_MARK_NTREMOVEIOCOMPLETION, 0 },
+    { EXE_IMPORT_NTDLL, "NtOpenProcess", EXE_HOST_IAT_MARK_NTOPENPROCESS, 0 },
+    { EXE_IMPORT_NTDLL, "NtQueryInformationProcess", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONPROCESS, 0 },
+    { EXE_IMPORT_NTDLL, "NtQuerySystemInformation", EXE_HOST_IAT_MARK_NTQUERYSYSTEMINFORMATION, 0 },
+    { EXE_IMPORT_NTDLL, "RtlGetVersion", EXE_HOST_IAT_MARK_RTLGETVERSION, 0 },
+    { EXE_IMPORT_NTDLL, "NtCreateSection", EXE_HOST_IAT_MARK_NTCREATESECTION, 0 },
+    { EXE_IMPORT_NTDLL, "NtMapViewOfSection", EXE_HOST_IAT_MARK_NTMAPVIEWOFSECTION, 0 },
+    { EXE_IMPORT_NTDLL, "NtUnmapViewOfSection", EXE_HOST_IAT_MARK_NTUNMAPVIEWOFSECTION, 0 },
+    { EXE_IMPORT_NTDLL, "NtQueryInformationFile", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtDeviceIoControlFile", EXE_HOST_IAT_MARK_NTDEVICEIOCONTROLFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtOpenFile", EXE_HOST_IAT_MARK_NTOPENFILE, 0 },
+    { EXE_IMPORT_NTDLL, "NtCreateUserProcess", EXE_HOST_IAT_MARK_NTCREATEUSERPROCESS, 0 },
+    { EXE_IMPORT_NTDLL, "LdrLoadDll", EXE_HOST_IAT_MARK_LDRLOADDLL, 0 },
+    { EXE_IMPORT_NTDLL, "LdrGetProcedureAddress", EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS, 0 },
+    { EXE_IMPORT_NTDLL, "RtlInitUnicodeString", EXE_HOST_IAT_MARK_RTLINITUNICODESTRING, 0 },
+    { EXE_IMPORT_USER32, "RegisterClassA", EXE_HOST_IAT_MARK_REGISTERCLASSA, 1 },
+    { EXE_IMPORT_USER32, "CreateWindowExA", EXE_HOST_IAT_MARK_CREATEWINDOWEXA, 1 },
+    { EXE_IMPORT_USER32, "DefWindowProcA", EXE_HOST_IAT_MARK_DEFWINDOWPROCA, 1 },
+    { EXE_IMPORT_USER32, "ShowWindow", EXE_HOST_IAT_MARK_SHOWWINDOW, 1 },
+    { EXE_IMPORT_USER32, "UpdateWindow", EXE_HOST_IAT_MARK_UPDATEWINDOW, 1 },
+    { EXE_IMPORT_USER32, "GetMessageA", EXE_HOST_IAT_MARK_GETMESSAGEA, 1 },
+    { EXE_IMPORT_USER32, "TranslateMessage", EXE_HOST_IAT_MARK_TRANSLATEMESSAGE, 1 },
+    { EXE_IMPORT_USER32, "DispatchMessageA", EXE_HOST_IAT_MARK_DISPATCHMESSAGEA, 1 },
+    { EXE_IMPORT_USER32, "PostQuitMessage", EXE_HOST_IAT_MARK_POSTQUITMESSAGE, 1 },
+    { EXE_IMPORT_USER32, "LoadCursorA", EXE_HOST_IAT_MARK_LOADCURSORA, 1 },
+    { EXE_IMPORT_USER32, "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 1 },
+    { EXE_IMPORT_USER32, "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 1 },
+    { EXE_IMPORT_USER32, "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 1 },
+    { EXE_IMPORT_USER32, "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 1 }
+};
 
 static int create_temp_file_path(char *path_out, size_t path_out_sz, const char *prefix) {
     if (!path_out || path_out_sz == 0 || !prefix) {
@@ -173,16 +278,37 @@ static uint32_t find_exe_import_iat_rva(const EXE_Binary_Weaver_Context *ctx,
     return 0U;
 }
 
+static int exe_code_contains_marker(const uint8_t *code, size_t code_size, uint32_t marker) {
+    size_t i;
+    if (!code || code_size < 4) return 0;
+    for (i = 0; i + 4 <= code_size; ++i) {
+        uint32_t value = ((uint32_t)code[i]) |
+                         ((uint32_t)code[i + 1] << 8) |
+                         ((uint32_t)code[i + 2] << 16) |
+                         ((uint32_t)code[i + 3] << 24);
+        if (value == marker) return 1;
+    }
+    return 0;
+}
+
+static int exe_code_uses_gui_imports(const uint8_t *code, size_t code_size) {
+    size_t i;
+    for (i = 0; i < sizeof(g_exe_import_patch_specs) / sizeof(g_exe_import_patch_specs[0]); ++i) {
+        if (!g_exe_import_patch_specs[i].gui_import) continue;
+        if (exe_code_contains_marker(code, code_size, g_exe_import_patch_specs[i].marker)) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int patch_exe_portal_iat_displacements(uint8_t *code,
                                               size_t code_size,
                                               uint32_t text_rva,
-                                              uint32_t ntwritefile_iat_rva,
-                                              uint32_t ntterminateprocess_iat_rva) {
+                                              const EXE_Binary_Weaver_Context *ctx) {
     size_t i;
-    int saw_write = 0;
-    int saw_terminate = 0;
-    if (!code || code_size < 4 || text_rva == 0U ||
-        ntwritefile_iat_rva == 0U || ntterminateprocess_iat_rva == 0U) {
+    size_t patched = 0;
+    if (!code || code_size < 4 || text_rva == 0U || !ctx) {
         return -1;
     }
     for (i = 0; i + 4 <= code_size; ++i) {
@@ -190,25 +316,28 @@ static int patch_exe_portal_iat_displacements(uint8_t *code,
                           ((uint32_t)code[i + 1] << 8) |
                           ((uint32_t)code[i + 2] << 16) |
                           ((uint32_t)code[i + 3] << 24);
-        uint32_t target_rva = 0U;
-        int32_t disp32;
-        if (marker == EXE_PORTAL_IAT_MARK_NTWRITEFILE) {
-            target_rva = ntwritefile_iat_rva;
-            saw_write = 1;
-        } else if (marker == EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS) {
-            target_rva = ntterminateprocess_iat_rva;
-            saw_terminate = 1;
-        } else {
-            continue;
+        size_t j;
+        for (j = 0; j < sizeof(g_exe_import_patch_specs) / sizeof(g_exe_import_patch_specs[0]); ++j) {
+            if (marker == g_exe_import_patch_specs[j].marker) {
+                uint32_t target_rva = find_exe_import_iat_rva(ctx,
+                                                              g_exe_import_patch_specs[j].dll_name,
+                                                              g_exe_import_patch_specs[j].function_name);
+                int32_t disp32;
+                if (target_rva == 0U) {
+                    return -1;
+                }
+                disp32 = (int32_t)((int64_t)target_rva - ((int64_t)text_rva + (int64_t)i + 4));
+                code[i + 0] = (uint8_t)(disp32 & 0xFF);
+                code[i + 1] = (uint8_t)((disp32 >> 8) & 0xFF);
+                code[i + 2] = (uint8_t)((disp32 >> 16) & 0xFF);
+                code[i + 3] = (uint8_t)((disp32 >> 24) & 0xFF);
+                patched++;
+                i += 3;
+                break;
+            }
         }
-        disp32 = (int32_t)((int64_t)target_rva - ((int64_t)text_rva + (int64_t)i + 4));
-        code[i + 0] = (uint8_t)(disp32 & 0xFF);
-        code[i + 1] = (uint8_t)((disp32 >> 8) & 0xFF);
-        code[i + 2] = (uint8_t)((disp32 >> 16) & 0xFF);
-        code[i + 3] = (uint8_t)((disp32 >> 24) & 0xFF);
-        i += 3;
     }
-    return (saw_write && saw_terminate) ? 0 : -1;
+    return patched > 0 ? 0 : -1;
 }
 
 // ============================================================================
@@ -588,6 +717,170 @@ typedef struct {
     const char *im4p_identifier; /* --is im4p <name>: IM4P 标识符名称 (default: "krnl") */
 } CompilerOptions;
 
+static int compiler_append_input_file(CompilerOptions *opts, char *path) {
+    if (!opts || !path) return -1;
+    if (opts->input_count >= MAX_INPUT_FILES) {
+        fprintf(stderr, "Error: Too many input files\n");
+        return -1;
+    }
+    opts->input_files[opts->input_count++] = path;
+    return 0;
+}
+
+static char *dup_lib_normalized_path(const char *path) {
+    size_t i;
+    size_t len;
+    char *out;
+    if (!path) return NULL;
+    len = strlen(path);
+    out = (char *)malloc(len + 1);
+    if (!out) return NULL;
+    memcpy(out, path, len + 1);
+    for (i = 0; i < len; ++i) {
+        if (out[i] == '\\') out[i] = '/';
+    }
+    return out;
+}
+
+static char *join_lib_root_path(const char *root, const char *relative) {
+    char *norm_root;
+    char *norm_rel;
+    char *joined;
+    size_t root_len;
+    size_t rel_len;
+    int need_sep;
+    if (!root || !relative) return NULL;
+    norm_root = dup_lib_normalized_path(root);
+    norm_rel = dup_lib_normalized_path(relative);
+    if (!norm_root || !norm_rel) {
+        free(norm_root);
+        free(norm_rel);
+        return NULL;
+    }
+    while (*norm_rel == '/' || *norm_rel == '.') {
+        if (*norm_rel == '.' && norm_rel[1] == '/') {
+            memmove(norm_rel, norm_rel + 2, strlen(norm_rel + 2) + 1);
+            continue;
+        }
+        if (*norm_rel == '/') {
+            memmove(norm_rel, norm_rel + 1, strlen(norm_rel + 1) + 1);
+            continue;
+        }
+        break;
+    }
+    root_len = strlen(norm_root);
+    rel_len = strlen(norm_rel);
+    need_sep = (root_len > 0 && norm_root[root_len - 1] != '/');
+    joined = (char *)malloc(root_len + rel_len + (need_sep ? 2 : 1));
+    if (!joined) {
+        free(norm_root);
+        free(norm_rel);
+        return NULL;
+    }
+    memcpy(joined, norm_root, root_len);
+    if (need_sep) joined[root_len++] = '/';
+    memcpy(joined + root_len, norm_rel, rel_len + 1);
+    free(norm_root);
+    free(norm_rel);
+    return joined;
+}
+
+static int path_is_directory(const char *path) {
+    struct stat st;
+    if (!path) return 0;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISDIR(st.st_mode) ? 1 : 0;
+}
+
+static int path_is_regular_file(const char *path) {
+    struct stat st;
+    if (!path) return 0;
+    if (stat(path, &st) != 0) return 0;
+    return S_ISREG(st.st_mode) ? 1 : 0;
+}
+
+static int path_has_ae_suffix(const char *path) {
+    size_t len;
+    if (!path) return 0;
+    len = strlen(path);
+    return len >= 3 && strcmp(path + len - 3, ".ae") == 0;
+}
+
+static int append_lib_directory_recursive(CompilerOptions *opts, const char *dir_path) {
+    DIR *dir;
+    struct dirent *ent;
+    if (!opts || !dir_path) return -1;
+    dir = opendir(dir_path);
+    if (!dir) {
+        fprintf(stderr, "Error: Cannot open library directory '%s'\n", dir_path);
+        return -1;
+    }
+    while ((ent = readdir(dir)) != NULL) {
+        char *child;
+        size_t base_len;
+        size_t name_len;
+        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        base_len = strlen(dir_path);
+        name_len = strlen(ent->d_name);
+        child = (char *)malloc(base_len + name_len + 2);
+        if (!child) {
+            closedir(dir);
+            return -1;
+        }
+        memcpy(child, dir_path, base_len);
+        if (base_len == 0 || dir_path[base_len - 1] != '/') child[base_len++] = '/';
+        memcpy(child + base_len, ent->d_name, name_len + 1);
+
+        if (path_is_directory(child)) {
+            if (append_lib_directory_recursive(opts, child) != 0) {
+                free(child);
+                closedir(dir);
+                return -1;
+            }
+            free(child);
+            continue;
+        }
+        if (path_is_regular_file(child) && path_has_ae_suffix(child)) {
+            if (compiler_append_input_file(opts, child) != 0) {
+                free(child);
+                closedir(dir);
+                return -1;
+            }
+            continue;
+        }
+        free(child);
+    }
+    closedir(dir);
+    return 0;
+}
+
+static int append_env_library_path(CompilerOptions *opts, const char *lib_spec) {
+    const char *lib_root;
+    char *resolved;
+    if (!opts || !lib_spec || lib_spec[0] == '\0') return -1;
+    lib_root = getenv("AELibraryPATH");
+    if (!lib_root || lib_root[0] == '\0') {
+        lib_root = getenv("AELibraryPath");
+    }
+    if (!lib_root || lib_root[0] == '\0') {
+        fprintf(stderr, "Error: --lib requires environment variable AELibraryPATH\n");
+        return -1;
+    }
+    resolved = join_lib_root_path(lib_root, lib_spec);
+    if (!resolved) return -1;
+    if (path_is_directory(resolved)) {
+        int rc = append_lib_directory_recursive(opts, resolved);
+        free(resolved);
+        return rc;
+    }
+    if (path_is_regular_file(resolved) && path_has_ae_suffix(resolved)) {
+        return compiler_append_input_file(opts, resolved);
+    }
+    fprintf(stderr, "Error: --lib target '%s' was not found under AELibraryPATH\n", lib_spec);
+    free(resolved);
+    return -1;
+}
+
 static int parse_u64(const char *text, uint64_t *out) {
     char *endp = NULL;
     unsigned long long v;
@@ -687,6 +980,8 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  --include-lib <lib>  Include library source (std, auraui, aurakit, flux)\n");
     fprintf(stderr, "                       Multiple --include-lib flags can be used\n");
     fprintf(stderr, "                       Example: aethelc app.ae --include-lib std --include-lib auraui\n");
+    fprintf(stderr, "  --lib <path>         Include AE library file or directory from AELibraryPATH root\n");
+    fprintf(stderr, "                       Use Windows-style relative paths, e.g. --lib GUI\\\\aura or --lib IO\\\\win\\\\winDiskIo.ae\n");
     fprintf(stderr, "\nDebug and Help Options:\n");
     fprintf(stderr, "  --debug              Enable debug output during compilation\n");
     fprintf(stderr, "  -h, --help           Display this help message\n");
@@ -901,6 +1196,15 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                 opts->include_libs[opts->include_lib_count++] = argv[++i];
             } else if (opts->include_lib_count >= 32) {
                 fprintf(stderr, "Error: Too many libraries to include (max 32)\n");
+                return 1;
+            }
+        } else if (strcmp(argv[i], "--lib") == 0) {
+            if (i + 1 < argc) {
+                if (append_env_library_path(opts, argv[++i]) != 0) {
+                    return 1;
+                }
+            } else {
+                fprintf(stderr, "Error: --lib requires a file or directory path\n");
                 return 1;
             }
         } else if (strcmp(argv[i], "--is") == 0) {
@@ -2097,8 +2401,8 @@ static int run_compiler(CompilerOptions *opts) {
         uint8_t *probe_image = NULL;
         uint32_t probe_image_size = 0U;
         EXE_Section_Data *text_section;
-        uint32_t ntwritefile_iat_rva;
-        uint32_t ntterminateprocess_iat_rva;
+        uint16_t exe_subsystem;
+        size_t import_index;
         if (opts->verbose) {
             printf("[INFO] 使用 EXE Binary Weaver 生成 Windows 控制台应用: %s\n", output_file);
         }
@@ -2108,20 +2412,34 @@ static int run_compiler(CompilerOptions *opts) {
          */
         
         EXE_Binary_Weaver_Context weaver_ctx;
+        exe_subsystem = exe_code_uses_gui_imports(code, code_size) ?
+                        EXE_WIN64_SUBSYSTEM_WINDOWS_GUI :
+                        EXE_WIN64_SUBSYSTEM_WINDOWS_CUI;
         if (EXE_Weaver_Initialize(&weaver_ctx, 
                                  EXE_WIN64_IMAGE_BASE_DEFAULT,
-                                 EXE_WIN64_SUBSYSTEM_WINDOWS_CUI) != 0) {
+                                 exe_subsystem) != 0) {
             fprintf(stderr, "Error: Failed to initialize EXE weaver context\n");
             free(binary_data);
             return 1;
         }
 
-        if (EXE_Weaver_AddImport(&weaver_ctx, EXE_IMPORT_NTDLL, "NtWriteFile", NULL) != 0 ||
-            EXE_Weaver_AddImport(&weaver_ctx, EXE_IMPORT_NTDLL, "NtTerminateProcess", NULL) != 0) {
-            fprintf(stderr, "Error: Failed to register required ntdll imports for EXE portal bootstrap\n");
-            EXE_Weaver_Cleanup(&weaver_ctx);
-            free(binary_data);
-            return 1;
+        for (import_index = 0;
+             import_index < sizeof(g_exe_import_patch_specs) / sizeof(g_exe_import_patch_specs[0]);
+             ++import_index) {
+            if (!exe_code_contains_marker(code, code_size, g_exe_import_patch_specs[import_index].marker)) {
+                continue;
+            }
+            if (EXE_Weaver_AddImport(&weaver_ctx,
+                                     g_exe_import_patch_specs[import_index].dll_name,
+                                     g_exe_import_patch_specs[import_index].function_name,
+                                     NULL) != 0) {
+                fprintf(stderr, "Error: Failed to register required import '%s!%s' for EXE image\n",
+                        g_exe_import_patch_specs[import_index].dll_name,
+                        g_exe_import_patch_specs[import_index].function_name);
+                EXE_Weaver_Cleanup(&weaver_ctx);
+                free(binary_data);
+                return 1;
+            }
         }
         
         /* Add code section (.text|actflow) */
@@ -2180,14 +2498,11 @@ static int run_compiler(CompilerOptions *opts) {
         free(probe_image);
 
         text_section = find_exe_section(&weaver_ctx, ".text");
-        ntwritefile_iat_rva = find_exe_import_iat_rva(&weaver_ctx, EXE_IMPORT_NTDLL, "NtWriteFile");
-        ntterminateprocess_iat_rva = find_exe_import_iat_rva(&weaver_ctx, EXE_IMPORT_NTDLL, "NtTerminateProcess");
         if (!text_section ||
-            patch_exe_portal_iat_displacements(text_section->raw_data,
-                                               text_section->raw_size,
-                                               text_section->virtual_address,
-                                               ntwritefile_iat_rva,
-                                               ntterminateprocess_iat_rva) != 0) {
+           patch_exe_portal_iat_displacements(text_section->raw_data,
+                                              text_section->raw_size,
+                                              text_section->virtual_address,
+                                              &weaver_ctx) != 0) {
             fprintf(stderr, "Error: Failed to patch EXE portal bootstrap imports into .text\n");
             EXE_Weaver_Cleanup(&weaver_ctx);
             free(binary_data);

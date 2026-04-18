@@ -22,7 +22,7 @@ Aethelium is a systems-level language born for modern hardware. To eliminate the
 Identifiers are used for variable names, function names, and type names.
 *   **Allowed**: Letters, numbers, `/` (forward slash).
 *   **Forbidden**: `_` (underscore), starting with a digit.
-*   **Style**: Aethelium recommends **Path-Case** naming.
+*   **Style**: Aethelium recommends **Leaning-Tower** naming.
 
 ```aethelium
 // Correct

@@ -1,0 +1,95 @@
+@entry
+func start() : UInt64 {
+    let version: Win/IO/Sys/OSVersionInfoExW
+    let afd/status: Win/IO/Net/IoStatusBlock
+    let afd/transport: Win/IO/Net/UnicodeString
+    let afd/transport/storage: Win/IO/Net/UnicodeBuffer64
+    let afd/flow: UInt64 = 0
+    let afd/poll: Win/IO/Net/Afd/PollInfo
+    let afd/peer: Win/IO/Net/Afd/PeerWindow
+    let resolution/min: UInt64 = 0
+    let resolution/max: UInt64 = 0
+    let resolution/current: UInt64 = 0
+    let event/handle: UInt64 = 0
+    let wait/poll: Win/IO/Signal/Timeout
+    let section/handle: UInt64 = 0
+    let view/base: UInt64 = 0
+    let view/size: UInt64 = 4096
+    let proc/query/out: UInt64 = 0
+    let status: UInt64 = 0
+
+    print("phase sys/version")
+    status = Win/IO/Sys/version(&version)
+    print("status sys/version", status)
+
+    print("phase sys/timer")
+    status = Win/IO/Sys/timer/resolution(&resolution/min, &resolution/max, &resolution/current)
+    print("status sys/timer", status)
+
+    print("phase signal/create")
+    status = Win/IO/Signal/create/event(&event/handle, 0x1F0003, 0, 0, 0)
+    print("status signal/create", status)
+
+    print("phase signal/set")
+    status = Win/IO/Signal/set(event/handle, 0)
+    print("status signal/set", status)
+
+    print("phase signal/reset")
+    status = Win/IO/Signal/reset(event/handle, 0)
+    print("status signal/reset", status)
+
+    print("phase signal/wait/poll")
+    Win/IO/Signal/timeout/poll(&wait/poll)
+    status = Win/IO/Signal/wait/one(event/handle, 0, cast<UInt64>(&wait/poll))
+    print("status signal/wait/poll", status)
+
+    print("phase mem/section")
+    status = Win/IO/Mem/section/create(&section/handle, 0xF001F, 0, 4096, 0x04, 0x08000000, 0)
+    print("status mem/section/create", status)
+    status = Win/IO/Mem/section/map(section/handle, cast<UInt64>(-1), &view/base, 0, 0, 0, &view/size, 1, 0, 0x04)
+    print("status mem/section/map", status)
+    status = Win/IO/Mem/section/unmap(cast<UInt64>(-1), view/base)
+    print("status mem/section/unmap", status)
+
+    print("phase proc/query")
+    status = Win/IO/Proc/query/info(cast<UInt64>(-1), 0, &proc/query/out, 8, 0)
+    print("status proc/query", status)
+
+    print("phase net/transport/init")
+    status = Win/IO/Net/unicode/init/ascii(&afd/transport,
+                                           &afd/transport/storage,
+                                           cast<UInt64>("\\Device\\Tcp"))
+    print("status net/transport/init", status)
+
+    print("phase net/afd/open")
+    status = Win/IO/Net/afd/open/flow(&afd/flow, &afd/status, &afd/transport)
+    print("status net/afd/open", status)
+    print("afd io status", afd/status\status)
+    print("afd flow", afd/flow)
+
+    print("phase net/afd/poll")
+    Win/IO/Net/Afd/poll/info/init(&afd/poll,
+                                  afd/flow,
+                                  Win/IO/Net/Afd/EVENT/CONNECT + Win/IO/Net/Afd/EVENT/LOCAL/CLOSE + Win/IO/Net/Afd/EVENT/CONNECT/FAIL,
+                                  0)
+    status = Win/IO/Net/afd/poll(afd/flow, &afd/status, &afd/poll)
+    print("status net/afd/poll", status)
+    print("afd poll events", afd/poll\handles\events as UInt64)
+    print("afd poll status", afd/poll\handles\status as UInt64)
+
+    print("phase net/afd/transport/query")
+    Win/IO/Net/Afd/peer/window/init(&afd/peer, 32)
+    status = Win/IO/Net/afd/query/transport(afd/flow, &afd/status, &afd/peer, 40)
+    print("status net/afd/transport/query", status)
+    print("afd transport bytes", afd/peer\transport/size as UInt64)
+
+    print("win/io smoke")
+    print("os major", version\major)
+    print("os build", version\build)
+    print("timer current", resolution/current)
+    print("event handle", event/handle)
+    print("section handle", section/handle)
+    print("proc info", proc/query/out)
+    print("afd flow", afd/flow)
+    return 0
+}

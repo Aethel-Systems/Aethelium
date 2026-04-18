@@ -263,6 +263,15 @@ static int ast_extract_strings_recursive(ASTNode *node, const char **strings,
                 }
             }
             break;
+
+        case AST_WIN_BLOCK:
+            for (int i = 0; i < node->data.win_block.stmt_count && *count < capacity; i++) {
+                if (node->data.win_block.statements[i]) {
+                    ast_extract_strings_recursive(node->data.win_block.statements[i],
+                                                 strings, capacity, count);
+                }
+            }
+            break;
             
         case AST_IF_STMT: {
             if (node->data.if_stmt.condition && *count < capacity) {

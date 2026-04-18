@@ -150,7 +150,6 @@ section .text
 extern _syscall_open
 extern _syscall_write
 extern _syscall_close
-extern _calculate_crc32
 
 global _weave_aki_structure
 global _weave_srv_structure
@@ -435,11 +434,32 @@ _weave_aki_structure:
     ; =========================================================================
     ; Calculate and Write CRC32 over Header (0x00-0xFB, 252 bytes)
     ; =========================================================================
-    
-    mov rdi, rbx           ; arg1 = header buffer start
-    mov rsi, 0xFC          ; arg2 = bytes to checksum (0x00-0xFB)
-    call _calculate_crc32
-    mov [rbx + AKI_CRC_OFFSET], eax
+        
+        mov rdi, rbx
+        mov rsi, 0xFC
+        xor eax, eax
+        mov eax, 0xFFFFFFFF
+        mov r9, rsi
+        
+    .aki_crc_loop:
+        test r9, r9
+        jz .aki_crc_done
+        
+        movzx ecx, byte [rdi]
+        xor ecx, eax
+        and ecx, 0xFF
+        shr eax, 8
+        lea r10,[rel crc32_table]
+        mov ecx, [r10 + rcx*4]
+        xor eax, ecx
+        
+        inc rdi
+        dec r9
+        jmp .aki_crc_loop
+        
+    .aki_crc_done:
+        xor eax, 0xFFFFFFFF
+        mov[rbx + AKI_CRC_OFFSET], eax
     
     ; =========================================================================
     ; Open output file for writing

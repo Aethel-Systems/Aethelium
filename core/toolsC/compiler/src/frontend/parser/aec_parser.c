@@ -4932,6 +4932,59 @@ static ASTNode* parse_statement(Parser *parser) {
         
         return node;
     }
+
+    /* Windows 宿主原语块 - win { ... } */
+    if (check(parser, TK_IDENT) && strcmp(current_token(parser).lexeme, "win") == 0) {
+        int win_saved_pos = parser->pos;
+        advance(parser);  /* consume win */
+
+        if (check(parser, TK_LBRACE)) {
+            ASTNode *node = ast_create_node(AST_WIN_BLOCK);
+            int win_stmt_cap = 64;
+            node->data.win_block.statements = (ASTNode **)safe_malloc(sizeof(ASTNode *) * (size_t)win_stmt_cap);
+            node->data.win_block.stmt_count = 0;
+
+            if (!match(parser, TK_LBRACE)) {
+                error(parser, "Expected '{' after 'win'");
+                return node;
+            }
+
+            while (!check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+                ASTNode *stmt;
+                int pos_before;
+
+                while (match(parser, TK_NEWLINE));
+                if (check(parser, TK_RBRACE)) break;
+
+                pos_before = parser->pos;
+                stmt = parse_statement(parser);
+                if (stmt) {
+                    if (node->data.win_block.stmt_count >= win_stmt_cap) {
+                        win_stmt_cap *= 2;
+                        node->data.win_block.statements = (ASTNode **)safe_realloc(
+                            node->data.win_block.statements,
+                            sizeof(ASTNode *) * (size_t)win_stmt_cap
+                        );
+                    }
+                    node->data.win_block.statements[node->data.win_block.stmt_count++] = stmt;
+                } else if (parser->pos == pos_before) {
+                    Token t = current_token(parser);
+                    if (t.type != TK_RBRACE && t.type != TK_EOF) {
+                        advance(parser);
+                    }
+                }
+
+                while (match(parser, TK_NEWLINE) || match(parser, TK_SEMICOLON));
+            }
+
+            if (!match(parser, TK_RBRACE)) {
+                error(parser, "Expected '}' after win block");
+            }
+            return node;
+        }
+
+        parser->pos = win_saved_pos;
+    }
     
     /* 硬件层块 - hardware { ... } 硬件层代码 */
     if (check(parser, TK_IDENT) && strcmp(current_token(parser).lexeme, "hardware") == 0) {
@@ -5182,6 +5235,7 @@ ASTNode* parser_parse_program(Parser *parser) {
         char **attributes = NULL;
         int attr_count = 0;
         parse_attributes(parser, &attributes, &attr_count);
+        while (match(parser, TK_NEWLINE));
         
         /* 处理 use 语句 */
         if (check(parser, TK_USE)) {

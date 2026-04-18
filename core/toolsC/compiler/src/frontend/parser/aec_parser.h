@@ -72,6 +72,7 @@ typedef enum {
     AST_BYTES_BLOCK,    /* 新增：bytes { "HEX" ... } 字节注入 */
     AST_IMPORT_STMT,    /* 新增：import/Rimport 语句 */
     AST_TYPECAST,       /* 新增：expr as Type 类型转换 */
+    AST_WIN_BLOCK,      /* 新增：win { ... } Windows宿主原语块 */
     /* 原初层特性 */
     AST_MAP_DEF,        /* 新增：map ASCII内存拓扑定义 */
     AST_SYNTAX_DEF,     /* 新增：syntax自定义语法映射 */
@@ -335,6 +336,12 @@ struct ASTNode {
             char **hex_strings;    // 十六进制字符串数组
             int hex_count;
         } bytes_block;
+
+        /* 新增：win { ... } 宿主Windows原语块 */
+        struct {
+            ASTNode **statements;
+            int stmt_count;
+        } win_block;
         
         /* 新增：import/Rimport 语句 */
         struct {

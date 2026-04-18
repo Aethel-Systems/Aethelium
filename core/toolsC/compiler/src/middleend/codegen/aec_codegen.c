@@ -47,6 +47,54 @@
 #define EXE_PORTAL_IAT_MARK_NTWRITEFILE 0x11F1E1A1U
 #define EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS 0x22F2E2A2U
 
+#define EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORY   0x33F3E3B1U
+#define EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORYEX 0x33F3E3B2U
+#define EXE_HOST_IAT_MARK_NTFREEVIRTUALMEMORY       0x33F3E3B3U
+#define EXE_HOST_IAT_MARK_NTPROTECTVIRTUALMEMORY    0x33F3E3B4U
+#define EXE_HOST_IAT_MARK_NTQUERYVIRTUALMEMORY      0x33F3E3B5U
+#define EXE_HOST_IAT_MARK_NTLOCKVIRTUALMEMORY       0x33F3E3B6U
+#define EXE_HOST_IAT_MARK_NTUNLOCKVIRTUALMEMORY     0x33F3E3B7U
+#define EXE_HOST_IAT_MARK_NTCREATETHREADEX          0x33F3E3B8U
+#define EXE_HOST_IAT_MARK_NTCREATEFILE              0x33F3E3B9U
+#define EXE_HOST_IAT_MARK_NTREADFILE                0x33F3E3BAU
+#define EXE_HOST_IAT_MARK_NTCREATEEVENT             0x33F3E3BBU
+#define EXE_HOST_IAT_MARK_NTWAITFORSINGLEOBJECT     0x33F3E3BCU
+#define EXE_HOST_IAT_MARK_NTDELAYEXECUTION          0x33F3E3BDU
+#define EXE_HOST_IAT_MARK_NTREMOVEIOCOMPLETION      0x33F3E3BEU
+
+#define EXE_HOST_IAT_MARK_REGISTERCLASSA            0x44F4E4C1U
+#define EXE_HOST_IAT_MARK_CREATEWINDOWEXA           0x44F4E4C2U
+#define EXE_HOST_IAT_MARK_DEFWINDOWPROCA            0x44F4E4C3U
+#define EXE_HOST_IAT_MARK_SHOWWINDOW                0x44F4E4C4U
+#define EXE_HOST_IAT_MARK_UPDATEWINDOW              0x44F4E4C5U
+#define EXE_HOST_IAT_MARK_GETMESSAGEA               0x44F4E4C6U
+#define EXE_HOST_IAT_MARK_TRANSLATEMESSAGE          0x44F4E4C7U
+#define EXE_HOST_IAT_MARK_DISPATCHMESSAGEA          0x44F4E4C8U
+#define EXE_HOST_IAT_MARK_POSTQUITMESSAGE           0x44F4E4C9U
+#define EXE_HOST_IAT_MARK_LOADCURSORA               0x44F4E4CAU
+#define EXE_HOST_IAT_MARK_SETTIMER                  0x44F4E4CBU
+#define EXE_HOST_IAT_MARK_KILLTIMER                 0x44F4E4CCU
+#define EXE_HOST_IAT_MARK_SETWINDOWTEXTA            0x44F4E4CDU
+#define EXE_HOST_IAT_MARK_MESSAGEBOXA               0x44F4E4CEU
+#define EXE_HOST_IAT_MARK_NTSETEVENT                0x55F5E5D1U
+#define EXE_HOST_IAT_MARK_NTRESETEVENT              0x55F5E5D2U
+#define EXE_HOST_IAT_MARK_NTWAITFORMULTIPLEOBJECTS  0x55F5E5D3U
+#define EXE_HOST_IAT_MARK_NTSIGNALANDWAIT           0x55F5E5D4U
+#define EXE_HOST_IAT_MARK_NTOPENPROCESS             0x55F5E5D5U
+#define EXE_HOST_IAT_MARK_NTQUERYINFORMATIONPROCESS 0x55F5E5D6U
+#define EXE_HOST_IAT_MARK_NTQUERYSYSTEMINFORMATION  0x55F5E5D7U
+#define EXE_HOST_IAT_MARK_RTLGETVERSION             0x55F5E5D8U
+#define EXE_HOST_IAT_MARK_NTCREATESECTION           0x55F5E5D9U
+#define EXE_HOST_IAT_MARK_NTMAPVIEWOFSECTION        0x55F5E5DAU
+#define EXE_HOST_IAT_MARK_NTUNMAPVIEWOFSECTION      0x55F5E5DBU
+#define EXE_HOST_IAT_MARK_NTQUERYINFORMATIONFILE    0x55F5E5DCU
+#define EXE_HOST_IAT_MARK_NTDEVICEIOCONTROLFILE     0x55F5E5DDU
+#define EXE_HOST_IAT_MARK_NTOPENFILE                0x55F5E5DEU
+#define EXE_HOST_IAT_MARK_NTCREATEUSERPROCESS       0x55F5E5DFU
+#define EXE_HOST_IAT_MARK_LDRLOADDLL                0x66F6E6A1U
+#define EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS    0x66F6E6A2U
+#define EXE_HOST_IAT_MARK_RTLINITUNICODESTRING      0x66F6E6A3U
+
 /* 工业级别的错误报告函数 */
 static void codegen_error(CodeGenerator *gen, const char *fmt, ...) {
     if (!gen) return;
@@ -1705,6 +1753,7 @@ typedef struct {
     int machine_bits;
     const char *target_isa;
     int in_hardware_block;
+    int in_win_block;
     McSymbol *local_symbols;
     size_t local_symbol_count;
     size_t local_symbol_cap;
@@ -1732,6 +1781,7 @@ static int mc_emit_mov_acc_imm(McCtx *ctx, int64_t v);
 static int mc_emit_expr_a64(McCtx *ctx, ASTNode *expr);
 static int mc_emit_stmt_a64(McCtx *ctx, ASTNode *stmt);
 static int mc_emit_function_a64(McCtx *ctx, ASTNode *decl);
+static int mc_emit_embed_blob_and_lea_reg(McCtx *ctx, const uint8_t *blob, size_t blob_len, int dst_reg_low3);
 static int mc_patch_u32(McBuf *b, size_t off, uint32_t v);
 static McStructInfo *mc_find_struct(McCtx *ctx, const char *name);
 static uint32_t mc_type_size_from_name(McCtx *ctx, const char *type_name);
@@ -1741,6 +1791,7 @@ static int mc_symbol_base_addr_to_rax(McCtx *ctx, const McSymbol *sym);
 static int mc_emit_address_of_access(McCtx *ctx, ASTNode *access, const char **field_type_out, uint32_t *field_size_out);
 static int mc_eval_const_expr(McCtx *ctx, ASTNode *expr, uint64_t *out);
 static uint32_t mc_type_size_from_name(McCtx *ctx, const char *type_name);
+static const char *mc_expr_runtime_type_name(McCtx *ctx, ASTNode *expr);
 
 #define RELOC_PC32 2u
 
@@ -3375,6 +3426,64 @@ static int mc_emit_pop_argreg(McCtx *ctx, int arg_idx) {
     }
 }
 
+static int mc_emit_pop_win_argreg(McCtx *ctx, int arg_idx) {
+    if (!ctx || !mc_is_x64(ctx)) return -1;
+    switch (arg_idx) {
+        case 0: return mc_emit_u8(&ctx->code, 0x59); /* rcx */
+        case 1: return mc_emit_u8(&ctx->code, 0x5A); /* rdx */
+        case 2: return (mc_emit_u8(&ctx->code, 0x41) || mc_emit_u8(&ctx->code, 0x58)) ? -1 : 0; /* r8 */
+        case 3: return (mc_emit_u8(&ctx->code, 0x41) || mc_emit_u8(&ctx->code, 0x59)) ? -1 : 0; /* r9 */
+        default: return -1;
+    }
+}
+
+static int mc_emit_load_portal_slot_to_rax(McCtx *ctx, uint8_t slot_offset) {
+    if (!ctx || !mc_is_x64(ctx)) return -1;
+    if (mc_emit_u8(&ctx->code, 0x49) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, slot_offset) != 0) return -1;
+    return 0;
+}
+
+static int mc_emit_exe_portal_call(McCtx *ctx,
+                                   uint8_t slot_offset,
+                                   ASTNode *call_expr,
+                                   int implicit_current_process) {
+    int i;
+    int reg_args;
+    int stack_args;
+    int shadow_bytes;
+    if (!ctx || !call_expr || !mc_is_x64(ctx) || call_expr->type != AST_CALL) return -1;
+
+    if (mc_emit_load_portal_slot_to_rax(ctx, slot_offset) != 0) return -1;
+
+    for (i = call_expr->data.call.arg_count - 1; i >= 0; i--) {
+        if (mc_emit_expr(ctx, call_expr->data.call.args[i]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; /* push rax */
+    }
+
+    if (implicit_current_process) {
+        if (mc_emit_u8(&ctx->code, 0x6A) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1; /* push -1 */
+    }
+
+    reg_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0);
+    if (reg_args > 4) reg_args = 4;
+    for (i = 0; i < reg_args; i++) {
+        if (mc_emit_pop_win_argreg(ctx, i) != 0) return -1;
+    }
+
+    stack_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0) - reg_args;
+    if (stack_args < 0) stack_args = 0;
+    shadow_bytes = 32 + ((stack_args & 1) ? 8 : 0);
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, (uint8_t)shadow_bytes) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* call rax */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x81) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u32(&ctx->code, (uint32_t)(shadow_bytes + stack_args * 8)) != 0) return -1;
+    return 0;
+}
+
 static int mc_emit_call_target(McCtx *ctx, const char *target) {
     size_t off;
     int rel_width;
@@ -3508,6 +3617,11 @@ static int mc_plan_locals_in_stmt(McCtx *ctx, ASTNode *stmt) {
                 if (mc_plan_locals_in_stmt(ctx, stmt->data.hw_block.statements[i]) != 0) return -1;
             }
             return 0;
+        case AST_WIN_BLOCK:
+            for (i = 0; i < stmt->data.win_block.stmt_count; i++) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.win_block.statements[i]) != 0) return -1;
+            }
+            return 0;
         case AST_HW_MORPH_BLOCK:
             for (i = 0; i < stmt->data.hw_morph_block.stmt_count; i++) {
                 if (mc_plan_locals_in_stmt(ctx, stmt->data.hw_morph_block.statements[i]) != 0) return -1;
@@ -3534,11 +3648,244 @@ typedef struct {
     ASTNode *flush_expr;
 } McPrintArgs;
 
+typedef struct {
+    const char *semantic_name;
+    const char *dll_name;
+    const char *host_name;
+    uint32_t iat_marker;
+    int min_args;
+    int max_args;
+    int implicit_current_process;
+    int gui_call;
+    int dynamic_resolution;
+} ExeHostCallSpec;
+
+typedef struct {
+    const char *nt_name;
+    uint8_t slot_offset;
+    uint32_t iat_marker;
+} ExePortalImportSpec;
+
+static const ExePortalImportSpec g_exe_portal_imports[] = {
+    { "NtWriteFile", EXE_PORTAL_SLOT_NTWRITEFILE, EXE_PORTAL_IAT_MARK_NTWRITEFILE },
+    { "NtTerminateProcess", EXE_PORTAL_SLOT_NTTERMINATEPROCESS, EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS }
+};
+
+static const ExeHostCallSpec g_exe_host_aliases[] = {
+    { "win/mem/alloc", "ntdll.dll", "NtAllocateVirtualMemory", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORY, 6, 6, 0, 0, 0 },
+    { "win/mem/alloc/ex", "ntdll.dll", "NtAllocateVirtualMemoryEx", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORYEX, 7, 7, 0, 0, 0 },
+    { "win/mem/free", "ntdll.dll", "NtFreeVirtualMemory", EXE_HOST_IAT_MARK_NTFREEVIRTUALMEMORY, 4, 4, 0, 0, 0 },
+    { "win/mem/protect", "ntdll.dll", "NtProtectVirtualMemory", EXE_HOST_IAT_MARK_NTPROTECTVIRTUALMEMORY, 5, 5, 0, 0, 0 },
+    { "win/mem/query", "ntdll.dll", "NtQueryVirtualMemory", EXE_HOST_IAT_MARK_NTQUERYVIRTUALMEMORY, 6, 6, 0, 0, 0 },
+    { "win/mem/lock", "ntdll.dll", "NtLockVirtualMemory", EXE_HOST_IAT_MARK_NTLOCKVIRTUALMEMORY, 4, 4, 0, 0, 0 },
+    { "win/mem/unlock", "ntdll.dll", "NtUnlockVirtualMemory", EXE_HOST_IAT_MARK_NTUNLOCKVIRTUALMEMORY, 4, 4, 0, 0, 0 },
+    { "win/mem/section/create", "ntdll.dll", "NtCreateSection", EXE_HOST_IAT_MARK_NTCREATESECTION, 7, 7, 0, 0, 0 },
+    { "win/mem/section/map", "ntdll.dll", "NtMapViewOfSection", EXE_HOST_IAT_MARK_NTMAPVIEWOFSECTION, 10, 10, 0, 0, 0 },
+    { "win/mem/section/unmap", "ntdll.dll", "NtUnmapViewOfSection", EXE_HOST_IAT_MARK_NTUNMAPVIEWOFSECTION, 2, 2, 0, 0, 0 },
+    { "win/thread/spawn", "ntdll.dll", "NtCreateThreadEx", EXE_HOST_IAT_MARK_NTCREATETHREADEX, 11, 11, 0, 0, 0 },
+    { "win/fs/open", "ntdll.dll", "NtCreateFile", EXE_HOST_IAT_MARK_NTCREATEFILE, 11, 11, 0, 0, 0 },
+    { "win/fs/read", "ntdll.dll", "NtReadFile", EXE_HOST_IAT_MARK_NTREADFILE, 9, 9, 0, 0, 0 },
+    { "win/fs/write", "ntdll.dll", "NtWriteFile", EXE_PORTAL_IAT_MARK_NTWRITEFILE, 9, 9, 0, 0, 0 },
+    { "win/disk/open", "ntdll.dll", "NtOpenFile", EXE_HOST_IAT_MARK_NTOPENFILE, 6, 6, 0, 0, 0 },
+    { "win/disk/query/file", "ntdll.dll", "NtQueryInformationFile", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONFILE, 5, 5, 0, 0, 0 },
+    { "win/disk/ioctl", "ntdll.dll", "NtDeviceIoControlFile", EXE_HOST_IAT_MARK_NTDEVICEIOCONTROLFILE, 10, 10, 0, 0, 0 },
+    { "win/sync/event", "ntdll.dll", "NtCreateEvent", EXE_HOST_IAT_MARK_NTCREATEEVENT, 5, 5, 0, 0, 0 },
+    { "win/sync/wait/one", "ntdll.dll", "NtWaitForSingleObject", EXE_HOST_IAT_MARK_NTWAITFORSINGLEOBJECT, 3, 3, 0, 0, 0 },
+    { "win/signal/set", "ntdll.dll", "NtSetEvent", EXE_HOST_IAT_MARK_NTSETEVENT, 2, 2, 0, 0, 0 },
+    { "win/signal/reset", "ntdll.dll", "NtResetEvent", EXE_HOST_IAT_MARK_NTRESETEVENT, 2, 2, 0, 0, 0 },
+    { "win/signal/wait/all", "ntdll.dll", "NtWaitForMultipleObjects", EXE_HOST_IAT_MARK_NTWAITFORMULTIPLEOBJECTS, 5, 5, 0, 0, 0 },
+    { "win/signal/and/wait", "ntdll.dll", "NtSignalAndWaitForSingleObject", EXE_HOST_IAT_MARK_NTSIGNALANDWAIT, 4, 4, 0, 0, 0 },
+    { "win/time/sleep", "ntdll.dll", "NtDelayExecution", EXE_HOST_IAT_MARK_NTDELAYEXECUTION, 2, 2, 0, 0, 0 },
+    { "win/io/completion/remove", "ntdll.dll", "NtRemoveIoCompletion", EXE_HOST_IAT_MARK_NTREMOVEIOCOMPLETION, 5, 5, 0, 0, 0 },
+    { "win/proc/open", "ntdll.dll", "NtOpenProcess", EXE_HOST_IAT_MARK_NTOPENPROCESS, 4, 4, 0, 0, 0 },
+    { "win/proc/query/info", "ntdll.dll", "NtQueryInformationProcess", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONPROCESS, 5, 5, 0, 0, 0 },
+    { "win/proc/create/user", "ntdll.dll", "NtCreateUserProcess", EXE_HOST_IAT_MARK_NTCREATEUSERPROCESS, 11, 11, 0, 0, 0 },
+    { "win/proc/exit", "ntdll.dll", "NtTerminateProcess", EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS, 1, 2, 1, 0, 0 },
+    { "win/sys/info/query", "ntdll.dll", "NtQuerySystemInformation", EXE_HOST_IAT_MARK_NTQUERYSYSTEMINFORMATION, 4, 4, 0, 0, 0 },
+    { "win/sys/version", "ntdll.dll", "RtlGetVersion", EXE_HOST_IAT_MARK_RTLGETVERSION, 1, 1, 0, 0, 0 },
+    { "win/RegisterClassA", "user32.dll", "RegisterClassA", EXE_HOST_IAT_MARK_REGISTERCLASSA, 1, 1, 0, 1, 0 },
+    { "win/CreateWindowExA", "user32.dll", "CreateWindowExA", EXE_HOST_IAT_MARK_CREATEWINDOWEXA, 12, 12, 0, 1, 0 },
+    { "win/DefWindowProcA", "user32.dll", "DefWindowProcA", EXE_HOST_IAT_MARK_DEFWINDOWPROCA, 4, 4, 0, 1, 0 },
+    { "win/ShowWindow", "user32.dll", "ShowWindow", EXE_HOST_IAT_MARK_SHOWWINDOW, 2, 2, 0, 1, 0 },
+    { "win/UpdateWindow", "user32.dll", "UpdateWindow", EXE_HOST_IAT_MARK_UPDATEWINDOW, 1, 1, 0, 1, 0 },
+    { "win/GetMessageA", "user32.dll", "GetMessageA", EXE_HOST_IAT_MARK_GETMESSAGEA, 4, 4, 0, 1, 0 },
+    { "win/TranslateMessage", "user32.dll", "TranslateMessage", EXE_HOST_IAT_MARK_TRANSLATEMESSAGE, 1, 1, 0, 1, 0 },
+    { "win/DispatchMessageA", "user32.dll", "DispatchMessageA", EXE_HOST_IAT_MARK_DISPATCHMESSAGEA, 1, 1, 0, 1, 0 },
+    { "win/PostQuitMessage", "user32.dll", "PostQuitMessage", EXE_HOST_IAT_MARK_POSTQUITMESSAGE, 1, 1, 0, 1, 0 },
+    { "win/LoadCursorA", "user32.dll", "LoadCursorA", EXE_HOST_IAT_MARK_LOADCURSORA, 2, 2, 0, 1, 0 },
+    { "win/SetTimer", "user32.dll", "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 4, 4, 0, 1, 0 },
+    { "win/KillTimer", "user32.dll", "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 2, 2, 0, 1, 0 },
+    { "win/SetWindowTextA", "user32.dll", "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 2, 2, 0, 1, 0 },
+    { "win/MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 4, 4, 0, 1, 0 }
+};
+
+static const ExeHostCallSpec g_exe_direct_imports[] = {
+    { "NtAllocateVirtualMemory", "ntdll.dll", "NtAllocateVirtualMemory", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtAllocateVirtualMemoryEx", "ntdll.dll", "NtAllocateVirtualMemoryEx", EXE_HOST_IAT_MARK_NTALLOCATEVIRTUALMEMORYEX, 0, 16, 0, 0, 0 },
+    { "NtFreeVirtualMemory", "ntdll.dll", "NtFreeVirtualMemory", EXE_HOST_IAT_MARK_NTFREEVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtProtectVirtualMemory", "ntdll.dll", "NtProtectVirtualMemory", EXE_HOST_IAT_MARK_NTPROTECTVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtQueryVirtualMemory", "ntdll.dll", "NtQueryVirtualMemory", EXE_HOST_IAT_MARK_NTQUERYVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtLockVirtualMemory", "ntdll.dll", "NtLockVirtualMemory", EXE_HOST_IAT_MARK_NTLOCKVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtUnlockVirtualMemory", "ntdll.dll", "NtUnlockVirtualMemory", EXE_HOST_IAT_MARK_NTUNLOCKVIRTUALMEMORY, 0, 16, 0, 0, 0 },
+    { "NtCreateThreadEx", "ntdll.dll", "NtCreateThreadEx", EXE_HOST_IAT_MARK_NTCREATETHREADEX, 0, 16, 0, 0, 0 },
+    { "NtCreateFile", "ntdll.dll", "NtCreateFile", EXE_HOST_IAT_MARK_NTCREATEFILE, 0, 16, 0, 0, 0 },
+    { "NtOpenFile", "ntdll.dll", "NtOpenFile", EXE_HOST_IAT_MARK_NTOPENFILE, 0, 16, 0, 0, 0 },
+    { "NtReadFile", "ntdll.dll", "NtReadFile", EXE_HOST_IAT_MARK_NTREADFILE, 0, 16, 0, 0, 0 },
+    { "NtWriteFile", "ntdll.dll", "NtWriteFile", EXE_PORTAL_IAT_MARK_NTWRITEFILE, 0, 16, 0, 0, 0 },
+    { "NtCreateEvent", "ntdll.dll", "NtCreateEvent", EXE_HOST_IAT_MARK_NTCREATEEVENT, 0, 16, 0, 0, 0 },
+    { "NtSetEvent", "ntdll.dll", "NtSetEvent", EXE_HOST_IAT_MARK_NTSETEVENT, 0, 16, 0, 0, 0 },
+    { "NtResetEvent", "ntdll.dll", "NtResetEvent", EXE_HOST_IAT_MARK_NTRESETEVENT, 0, 16, 0, 0, 0 },
+    { "NtWaitForSingleObject", "ntdll.dll", "NtWaitForSingleObject", EXE_HOST_IAT_MARK_NTWAITFORSINGLEOBJECT, 0, 16, 0, 0, 0 },
+    { "NtWaitForMultipleObjects", "ntdll.dll", "NtWaitForMultipleObjects", EXE_HOST_IAT_MARK_NTWAITFORMULTIPLEOBJECTS, 0, 16, 0, 0, 0 },
+    { "NtSignalAndWaitForSingleObject", "ntdll.dll", "NtSignalAndWaitForSingleObject", EXE_HOST_IAT_MARK_NTSIGNALANDWAIT, 0, 16, 0, 0, 0 },
+    { "NtDelayExecution", "ntdll.dll", "NtDelayExecution", EXE_HOST_IAT_MARK_NTDELAYEXECUTION, 0, 16, 0, 0, 0 },
+    { "NtRemoveIoCompletion", "ntdll.dll", "NtRemoveIoCompletion", EXE_HOST_IAT_MARK_NTREMOVEIOCOMPLETION, 0, 16, 0, 0, 0 },
+    { "NtOpenProcess", "ntdll.dll", "NtOpenProcess", EXE_HOST_IAT_MARK_NTOPENPROCESS, 0, 16, 0, 0, 0 },
+    { "NtQueryInformationProcess", "ntdll.dll", "NtQueryInformationProcess", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONPROCESS, 0, 16, 0, 0, 0 },
+    { "NtQuerySystemInformation", "ntdll.dll", "NtQuerySystemInformation", EXE_HOST_IAT_MARK_NTQUERYSYSTEMINFORMATION, 0, 16, 0, 0, 0 },
+    { "RtlGetVersion", "ntdll.dll", "RtlGetVersion", EXE_HOST_IAT_MARK_RTLGETVERSION, 0, 16, 0, 0, 0 },
+    { "NtCreateSection", "ntdll.dll", "NtCreateSection", EXE_HOST_IAT_MARK_NTCREATESECTION, 0, 16, 0, 0, 0 },
+    { "NtMapViewOfSection", "ntdll.dll", "NtMapViewOfSection", EXE_HOST_IAT_MARK_NTMAPVIEWOFSECTION, 0, 16, 0, 0, 0 },
+    { "NtUnmapViewOfSection", "ntdll.dll", "NtUnmapViewOfSection", EXE_HOST_IAT_MARK_NTUNMAPVIEWOFSECTION, 0, 16, 0, 0, 0 },
+    { "NtQueryInformationFile", "ntdll.dll", "NtQueryInformationFile", EXE_HOST_IAT_MARK_NTQUERYINFORMATIONFILE, 0, 16, 0, 0, 0 },
+    { "NtDeviceIoControlFile", "ntdll.dll", "NtDeviceIoControlFile", EXE_HOST_IAT_MARK_NTDEVICEIOCONTROLFILE, 0, 16, 0, 0, 0 },
+    { "NtCreateUserProcess", "ntdll.dll", "NtCreateUserProcess", EXE_HOST_IAT_MARK_NTCREATEUSERPROCESS, 0, 16, 0, 0, 0 },
+    { "NtTerminateProcess", "ntdll.dll", "NtTerminateProcess", EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS, 0, 16, 0, 0, 0 },
+    { "LdrLoadDll", "ntdll.dll", "LdrLoadDll", EXE_HOST_IAT_MARK_LDRLOADDLL, 0, 16, 0, 0, 0 },
+    { "LdrGetProcedureAddress", "ntdll.dll", "LdrGetProcedureAddress", EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS, 0, 16, 0, 0, 0 },
+    { "RtlInitUnicodeString", "ntdll.dll", "RtlInitUnicodeString", EXE_HOST_IAT_MARK_RTLINITUNICODESTRING, 0, 16, 0, 0, 0 },
+    { "RegisterClassA", "user32.dll", "RegisterClassA", EXE_HOST_IAT_MARK_REGISTERCLASSA, 0, 16, 0, 1, 0 },
+    { "CreateWindowExA", "user32.dll", "CreateWindowExA", EXE_HOST_IAT_MARK_CREATEWINDOWEXA, 0, 16, 0, 1, 0 },
+    { "DefWindowProcA", "user32.dll", "DefWindowProcA", EXE_HOST_IAT_MARK_DEFWINDOWPROCA, 0, 16, 0, 1, 0 },
+    { "ShowWindow", "user32.dll", "ShowWindow", EXE_HOST_IAT_MARK_SHOWWINDOW, 0, 16, 0, 1, 0 },
+    { "UpdateWindow", "user32.dll", "UpdateWindow", EXE_HOST_IAT_MARK_UPDATEWINDOW, 0, 16, 0, 1, 0 },
+    { "GetMessageA", "user32.dll", "GetMessageA", EXE_HOST_IAT_MARK_GETMESSAGEA, 0, 16, 0, 1, 0 },
+    { "TranslateMessage", "user32.dll", "TranslateMessage", EXE_HOST_IAT_MARK_TRANSLATEMESSAGE, 0, 16, 0, 1, 0 },
+    { "DispatchMessageA", "user32.dll", "DispatchMessageA", EXE_HOST_IAT_MARK_DISPATCHMESSAGEA, 0, 16, 0, 1, 0 },
+    { "PostQuitMessage", "user32.dll", "PostQuitMessage", EXE_HOST_IAT_MARK_POSTQUITMESSAGE, 0, 16, 0, 1, 0 },
+    { "LoadCursorA", "user32.dll", "LoadCursorA", EXE_HOST_IAT_MARK_LOADCURSORA, 0, 16, 0, 1, 0 },
+    { "SetTimer", "user32.dll", "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 0, 16, 0, 1, 0 },
+    { "KillTimer", "user32.dll", "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 0, 16, 0, 1, 0 },
+    { "SetWindowTextA", "user32.dll", "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 0, 16, 0, 1, 0 },
+    { "MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 0, 16, 0, 1, 0 }
+};
+
 static int mc_ast_literal_is_string(const ASTNode *expr) {
     return expr && expr->type == AST_LITERAL &&
            !expr->data.literal.is_float &&
            expr->data.literal.is_string &&
            expr->data.literal.value.str_value != NULL;
+}
+
+static int mc_build_win_module_filename(const char *module_name, char *out, size_t out_sz) {
+    size_t len;
+    size_t i;
+    if (!module_name || !out || out_sz == 0) return -1;
+    len = strlen(module_name);
+    if (len == 0) return -1;
+    if (strstr(module_name, ".dll") || strstr(module_name, ".DLL")) {
+        if (len + 1 > out_sz) return -1;
+        memcpy(out, module_name, len + 1);
+        for (i = 0; i < len; ++i) {
+            if (out[i] == '/') out[i] = '_';
+        }
+        return 0;
+    }
+    if (len + 5 > out_sz) return -1;
+    memcpy(out, module_name, len);
+    for (i = 0; i < len; ++i) {
+        if (out[i] == '/') out[i] = '_';
+    }
+    memcpy(out + len, ".dll", 5);
+    return 0;
+}
+
+static int mc_resolve_win_block_host_call(const char *callee_name,
+                                          char *module_out,
+                                          size_t module_out_sz,
+                                          char *host_out,
+                                          size_t host_out_sz) {
+    const char *slash;
+    size_t module_len;
+    size_t host_len;
+    if (!callee_name || !module_out || !host_out) return -1;
+
+    slash = strrchr(callee_name, '/');
+    if (slash) {
+        module_len = (size_t)(slash - callee_name);
+        host_len = strlen(slash + 1);
+        if (module_len == 0 || host_len == 0 || module_len + 1 > 128 || host_len + 1 > host_out_sz) return -1;
+        {
+            char module_name[128];
+            memcpy(module_name, callee_name, module_len);
+            module_name[module_len] = '\0';
+            if (mc_build_win_module_filename(module_name, module_out, module_out_sz) != 0) return -1;
+        }
+        memcpy(host_out, slash + 1, host_len + 1);
+        return 0;
+    }
+
+    if (strncmp(callee_name, "Nt", 2) == 0 ||
+        strncmp(callee_name, "Rtl", 3) == 0 ||
+        strncmp(callee_name, "Ldr", 3) == 0) {
+        if (mc_build_win_module_filename("ntdll", module_out, module_out_sz) != 0) return -1;
+        if (strlen(callee_name) + 1 > host_out_sz) return -1;
+        strcpy(host_out, callee_name);
+        return 0;
+    }
+    return -1;
+}
+
+static const ExePortalImportSpec *mc_find_exe_portal_import_by_name(const char *nt_name) {
+    size_t i;
+    if (!nt_name) return NULL;
+    for (i = 0; i < sizeof(g_exe_portal_imports) / sizeof(g_exe_portal_imports[0]); i++) {
+        if (strcmp(g_exe_portal_imports[i].nt_name, nt_name) == 0) {
+            return &g_exe_portal_imports[i];
+        }
+    }
+    return NULL;
+}
+
+static const ExeHostCallSpec *mc_find_exe_host_call(const McCtx *ctx, const char *callee_name) {
+    size_t i;
+    static ExeHostCallSpec direct_call;
+    static char module_name[128];
+    static char host_name[128];
+
+    if (!ctx || !callee_name) return NULL;
+
+    for (i = 0; i < sizeof(g_exe_host_aliases) / sizeof(g_exe_host_aliases[0]); i++) {
+        if (strcmp(g_exe_host_aliases[i].semantic_name, callee_name) == 0) {
+            return &g_exe_host_aliases[i];
+        }
+    }
+
+    if (ctx->in_win_block && mc_resolve_win_block_host_call(callee_name,
+                                                            module_name,
+                                                            sizeof(module_name),
+                                                            host_name,
+                                                            sizeof(host_name)) == 0) {
+        for (i = 0; i < sizeof(g_exe_direct_imports) / sizeof(g_exe_direct_imports[0]); i++) {
+            if (strcmp(g_exe_direct_imports[i].semantic_name, host_name) == 0 &&
+                strcmp(g_exe_direct_imports[i].dll_name, module_name) == 0) {
+                direct_call = g_exe_direct_imports[i];
+                direct_call.semantic_name = callee_name;
+                return &direct_call;
+            }
+        }
+        direct_call.semantic_name = callee_name;
+        direct_call.dll_name = module_name;
+        direct_call.host_name = host_name;
+        direct_call.iat_marker = 0U;
+        direct_call.min_args = 0;
+        direct_call.max_args = 16;
+        direct_call.implicit_current_process = 0;
+        direct_call.gui_call = 0;
+        direct_call.dynamic_resolution = 1;
+        return &direct_call;
+    }
+    return NULL;
 }
 
 static McPrintMode mc_select_print_mode(const McCtx *ctx) {
@@ -3703,6 +4050,204 @@ static int mc_emit_inline_blob_and_lea_reg(McCtx *ctx, const uint8_t *blob, size
     return mc_patch_u32(&ctx->code, jmp_disp_off, (uint32_t)(int32_t)jmp_disp);
 }
 
+static int mc_emit_win64_callback_thunk_ptr(McCtx *ctx, const char *target_name) {
+    size_t lea_disp_off;
+    size_t jmp_disp_off;
+    size_t thunk_off;
+    size_t thunk_end;
+    size_t call_rel_off;
+    int64_t lea_disp;
+    int64_t jmp_disp;
+
+    if (!ctx || !target_name || !mc_is_x64(ctx) || ctx->target_format != FORMAT_EXE) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1; /* lea rax, [rip+thunk] */
+    lea_disp_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0xE9) != 0) return -1; /* jmp after thunk */
+    jmp_disp_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+
+    thunk_off = ctx->code.size;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xCF) != 0) return -1; /* mov rdi, rcx */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xD6) != 0) return -1; /* mov rsi, rdx */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, r8 */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC9) != 0) return -1; /* mov rcx, r9 */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x44) != 0 ||
+        mc_emit_u8(&ctx->code, 0x24) != 0 || mc_emit_u8(&ctx->code, 0x28) != 0) return -1; /* mov r8, [rsp+0x28] */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x4C) != 0 ||
+        mc_emit_u8(&ctx->code, 0x24) != 0 || mc_emit_u8(&ctx->code, 0x30) != 0) return -1; /* mov r9, [rsp+0x30] */
+
+    if (mc_emit_u8(&ctx->code, 0xE8) != 0) return -1; /* call target */
+    call_rel_off = ctx->code.size;
+    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+    if (mc_ctx_add_call_fixup(ctx, target_name, call_rel_off, 4) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0xC3) != 0) return -1; /* ret */
+
+    thunk_end = ctx->code.size;
+    lea_disp = (int64_t)thunk_off - (int64_t)(lea_disp_off + 4);
+    jmp_disp = (int64_t)thunk_end - (int64_t)(jmp_disp_off + 4);
+    if (lea_disp < INT32_MIN || lea_disp > INT32_MAX) return -1;
+    if (jmp_disp < INT32_MIN || jmp_disp > INT32_MAX) return -1;
+    if (mc_patch_u32(&ctx->code, lea_disp_off, (uint32_t)(int32_t)lea_disp) != 0) return -1;
+    return mc_patch_u32(&ctx->code, jmp_disp_off, (uint32_t)(int32_t)jmp_disp);
+}
+
+static int mc_emit_cstring_ptr(McCtx *ctx, const char *text) {
+    size_t len;
+    uint8_t *blob;
+    int rc;
+    if (!ctx || !text) return -1;
+    len = strlen(text) + 1;
+    blob = (uint8_t *)malloc(len);
+    if (!blob) return -1;
+    memcpy(blob, text, len);
+    if (mc_is_x64(ctx) && ctx->target_format == FORMAT_EXE) {
+        rc = mc_emit_inline_blob_and_lea_reg(ctx, blob, len, 0);
+    } else {
+        rc = mc_emit_embed_blob_and_lea_reg(ctx, blob, len, 0);
+    }
+    free(blob);
+    return rc;
+}
+
+static int mc_emit_utf16le_ptr_reg(McCtx *ctx, const char *text, int dst_reg_low3) {
+    size_t len;
+    size_t i;
+    uint8_t *blob;
+    int rc;
+    if (!ctx || !text) return -1;
+    len = strlen(text) + 1;
+    blob = (uint8_t *)malloc(len * 2);
+    if (!blob) return -1;
+    for (i = 0; i < len; ++i) {
+        blob[i * 2] = (uint8_t)text[i];
+        blob[i * 2 + 1] = 0;
+    }
+    if (mc_is_x64(ctx) && ctx->target_format == FORMAT_EXE) {
+        rc = mc_emit_inline_blob_and_lea_reg(ctx, blob, len * 2, dst_reg_low3);
+    } else {
+        rc = mc_emit_embed_blob_and_lea_reg(ctx, blob, len * 2, dst_reg_low3);
+    }
+    free(blob);
+    return rc;
+}
+
+static int mc_emit_dynamic_win_host_call(McCtx *ctx,
+                                         const char *module_name,
+                                         const char *host_name,
+                                         ASTNode *call_expr,
+                                         int implicit_current_process) {
+    int i;
+    int reg_args;
+    int stack_args;
+    int shadow_bytes;
+    const size_t module_ustr_off = 0x00;
+    const size_t module_handle_off = 0x10;
+    const size_t proc_astr_off = 0x18;
+    const size_t proc_handle_off = 0x28;
+    const int resolver_frame = 0x48;
+
+    if (!ctx || !module_name || !host_name || !call_expr || !mc_is_x64(ctx)) return -1;
+
+    for (i = call_expr->data.call.arg_count - 1; i >= 0; i--) {
+        if (mc_emit_expr(ctx, call_expr->data.call.args[i]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1;
+    }
+    if (implicit_current_process) {
+        if (mc_emit_u8(&ctx->code, 0x6A) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1;
+    }
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, (uint8_t)resolver_frame) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)module_ustr_off) != 0) return -1; /* lea rcx, [rsp+module_ustr_off] */
+    if (mc_emit_utf16le_ptr_reg(ctx, module_name, 2) != 0) return -1; /* rdx */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
+        mc_emit_u32(&ctx->code, EXE_HOST_IAT_MARK_RTLINITUNICODESTRING) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC1) != 0 || mc_emit_u32(&ctx->code, 0) != 0) return -1; /* rcx = NULL */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC2) != 0 || mc_emit_u32(&ctx->code, 0) != 0) return -1; /* rdx = 0 */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)module_ustr_off) != 0) return -1; /* lea r8, [rsp+module_ustr_off] */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)module_handle_off) != 0) return -1; /* lea r9, [rsp+module_handle_off] */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
+        mc_emit_u32(&ctx->code, EXE_HOST_IAT_MARK_LDRLOADDLL) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+
+    if (mc_emit_cstring_ptr(ctx, host_name) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)(proc_astr_off + 8)) != 0) return -1; /* buffer */
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)proc_astr_off) != 0 ||
+        mc_emit_u16(&ctx->code, (uint16_t)strlen(host_name)) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x66) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)(proc_astr_off + 2)) != 0 ||
+        mc_emit_u16(&ctx->code, (uint16_t)(strlen(host_name) + 1)) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
+        mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)module_handle_off) != 0) return -1; /* rcx=module */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x54) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)proc_astr_off) != 0) return -1; /* rdx=&astr */
+    if (mc_emit_u8(&ctx->code, 0x45) != 0 || mc_emit_u8(&ctx->code, 0x31) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* xor r8d, r8d */
+    if (mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x4C) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)proc_handle_off) != 0) return -1; /* r9=&proc */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
+        mc_emit_u32(&ctx->code, EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, (uint8_t)proc_handle_off) != 0) return -1; /* mov rax, [rsp+proc_handle_off] */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, (uint8_t)resolver_frame) != 0) return -1;
+
+    reg_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0);
+    if (reg_args > 4) reg_args = 4;
+    for (i = 0; i < reg_args; i++) {
+        if (mc_emit_pop_win_argreg(ctx, i) != 0) return -1;
+    }
+
+    stack_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0) - reg_args;
+    if (stack_args < 0) stack_args = 0;
+    shadow_bytes = 32 + ((stack_args & 1) ? 8 : 0);
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, (uint8_t)shadow_bytes) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x81) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u32(&ctx->code, (uint32_t)(shadow_bytes + stack_args * 8)) != 0) return -1;
+    return 0;
+}
+
 static int mc_emit_exe_portal_print_call(McCtx *ctx) {
     if (!ctx || !mc_is_x64(ctx)) return -1;
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
@@ -3739,6 +4284,53 @@ static int mc_emit_exe_portal_print_call(McCtx *ctx) {
     if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* call rax */
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
         mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x60) != 0) return -1; /* add rsp, 0x60 */
+    return 0;
+}
+
+static int mc_emit_exe_portal_import_slot_init(McCtx *ctx, uint8_t slot_offset, uint32_t iat_marker) {
+    if (!ctx || !mc_is_x64(ctx)) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
+        mc_emit_u32(&ctx->code, iat_marker) != 0) return -1; /* mov rax, [rip+iat] */
+    if (mc_emit_u8(&ctx->code, 0x49) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
+        mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
+        mc_emit_u8(&ctx->code, slot_offset) != 0) return -1; /* mov [r12+slot], rax */
+    return 0;
+}
+
+static int mc_emit_exe_host_call(McCtx *ctx, uint32_t iat_marker, ASTNode *call_expr, int implicit_current_process) {
+    int i;
+    int reg_args;
+    int stack_args;
+    int shadow_bytes;
+
+    if (!ctx || !call_expr || !mc_is_x64(ctx)) return -1;
+
+    for (i = call_expr->data.call.arg_count - 1; i >= 0; i--) {
+        if (mc_emit_expr(ctx, call_expr->data.call.args[i]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; /* push rax */
+    }
+
+    if (implicit_current_process) {
+        if (mc_emit_u8(&ctx->code, 0x6A) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0) return -1; /* push -1 */
+    }
+
+    reg_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0);
+    if (reg_args > 4) reg_args = 4;
+    for (i = 0; i < reg_args; i++) {
+        if (mc_emit_pop_win_argreg(ctx, i) != 0) return -1;
+    }
+
+    stack_args = call_expr->data.call.arg_count + (implicit_current_process ? 1 : 0) - reg_args;
+    if (stack_args < 0) stack_args = 0;
+    shadow_bytes = 32 + ((stack_args & 1) ? 8 : 0);
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, (uint8_t)shadow_bytes) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
+        mc_emit_u32(&ctx->code, iat_marker) != 0) return -1; /* mov rax, [rip+iat] */
+    if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1;
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x81) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u32(&ctx->code, (uint32_t)(shadow_bytes + stack_args * 8)) != 0) return -1;
     return 0;
 }
 
@@ -4110,14 +4702,136 @@ static int mc_emit_print_text(McCtx *ctx, McPrintMode mode, const char *text) {
     return rc;
 }
 
+static int mc_type_name_is_integer_like(const char *type_name) {
+    const char *t = mc_trim_type_prefixes(type_name);
+    if (!t) return 0;
+    return strcmp(t, "UInt8") == 0 ||
+           strcmp(t, "Int8") == 0 ||
+           strcmp(t, "UInt16") == 0 ||
+           strcmp(t, "Int16") == 0 ||
+           strcmp(t, "UInt32") == 0 ||
+           strcmp(t, "Int32") == 0 ||
+           strcmp(t, "UInt64") == 0 ||
+           strcmp(t, "Int64") == 0 ||
+           strcmp(t, "Bool") == 0 ||
+           strcmp(t, "bool") == 0 ||
+           strcmp(t, "PhysAddr") == 0 ||
+           strcmp(t, "VirtAddr") == 0;
+}
+
+static const char *mc_access_runtime_type_name(McCtx *ctx, ASTNode *access) {
+    ASTNode *obj;
+    McSymbol *sym;
+    McStructInfo *st;
+    McStructField *field;
+    const char *type_name;
+    const char *struct_name;
+
+    if (!ctx || !access || access->type != AST_ACCESS || !access->data.access.member) return NULL;
+    obj = access->data.access.object;
+    if (!obj || obj->type != AST_IDENT || !obj->data.ident.name) return NULL;
+
+    sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
+    if (!sym || !sym->type_name) return NULL;
+    type_name = mc_trim_type_prefixes(sym->type_name);
+    struct_name = mc_extract_struct_name_from_type(type_name, "ptr<");
+    if (!struct_name) struct_name = mc_extract_struct_name_from_type(type_name, "view<");
+    if (!struct_name && mc_find_struct(ctx, type_name)) struct_name = type_name;
+    if (!struct_name) return NULL;
+
+    st = mc_find_struct(ctx, struct_name);
+    if (!st) return NULL;
+    field = mc_find_struct_field(st, access->data.access.member);
+    if (!field) return NULL;
+    return field->type_name;
+}
+
+static const char *mc_expr_runtime_type_name(McCtx *ctx, ASTNode *expr) {
+    static const char *k_uint64 = "UInt64";
+    static const char *k_int64 = "Int64";
+    if (!ctx || !expr) return NULL;
+    switch (expr->type) {
+        case AST_LITERAL:
+            if (expr->data.literal.is_string) return "ptr<UInt8>";
+            if (expr->data.literal.is_float) return "Float64";
+            return k_int64;
+        case AST_IDENT: {
+            McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, expr->data.ident.name);
+            if (!sym) sym = mc_find_symbol(ctx->const_symbols, ctx->const_symbol_count, expr->data.ident.name);
+            return sym ? sym->type_name : NULL;
+        }
+        case AST_ACCESS:
+            return mc_access_runtime_type_name(ctx, expr);
+        case AST_TYPECAST:
+            if (expr->data.typecast.target_type && expr->data.typecast.target_type->type == AST_TYPE) {
+                return expr->data.typecast.target_type->data.type.name;
+            }
+            return NULL;
+        case AST_BINARY_OP:
+        case AST_UNARY_OP:
+            return k_uint64;
+        default:
+            return NULL;
+    }
+}
+
+static int mc_emit_print_u64_hex_runtime(McCtx *ctx, McPrintMode mode, ASTNode *expr) {
+    int i;
+    static const uint8_t hex_digits[] = "0123456789ABCDEF";
+    if (!ctx || !expr || !mc_is_x64(ctx) || mode == MC_PRINT_MODE_UEFI) return -1;
+    if (mc_emit_expr(ctx, expr) != 0) return -1;
+
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* sub rsp, 0x20 */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x3C) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0) return -1; /* lea rdi, [rsp] */
+    if (mc_emit_u8(&ctx->code, 0xC6) != 0 || mc_emit_u8(&ctx->code, 0x07) != 0 ||
+        mc_emit_u8(&ctx->code, '0') != 0) return -1; /* mov byte [rdi], '0' */
+    if (mc_emit_u8(&ctx->code, 0xC6) != 0 || mc_emit_u8(&ctx->code, 0x47) != 0 ||
+        mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 'x') != 0) return -1; /* mov byte [rdi+1], 'x' */
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 ||
+        mc_emit_u8(&ctx->code, 0x77) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* lea rsi, [rdi+2] */
+    if (mc_emit_inline_blob_and_lea_reg(ctx, hex_digits, sizeof(hex_digits) - 1, 1) != 0) return -1; /* lea rcx, [digits] */
+
+    for (i = 0; i < 16; i++) {
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
+            mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, rax */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0 ||
+            mc_emit_u8(&ctx->code, 0xEA) != 0 || mc_emit_u8(&ctx->code, 0x3C) != 0) return -1; /* shr rdx, 60 */
+        if (mc_emit_u8(&ctx->code, 0x8A) != 0 || mc_emit_u8(&ctx->code, 0x14) != 0 ||
+            mc_emit_u8(&ctx->code, 0x11) != 0) return -1; /* mov dl, [rcx+rdx] */
+        if (mc_emit_u8(&ctx->code, 0x88) != 0 || mc_emit_u8(&ctx->code, 0x16) != 0) return -1; /* mov [rsi], dl */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 ||
+            mc_emit_u8(&ctx->code, 0xC6) != 0) return -1; /* inc rsi */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0 ||
+            mc_emit_u8(&ctx->code, 0xE0) != 0 || mc_emit_u8(&ctx->code, 0x04) != 0) return -1; /* shl rax, 4 */
+    }
+
+    if (mc_emit_u8(&ctx->code, 0xBE) != 0 || mc_emit_u32(&ctx->code, 18) != 0) return -1; /* mov esi, 18 */
+    if (mode == MC_PRINT_MODE_EXE_PORTAL) {
+        if (mc_emit_exe_portal_print_call(ctx) != 0) return -1;
+    } else if (mode == MC_PRINT_MODE_RAW) {
+        if (mc_emit_raw_print_call(ctx) != 0) return -1;
+    } else {
+        if (mc_emit_syscall_print_call(ctx) != 0) return -1;
+    }
+    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+        mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* add rsp, 0x20 */
+    return 0;
+}
+
 static int mc_emit_print_expr_runtime(McCtx *ctx, McPrintMode mode, ASTNode *expr) {
+    const char *type_name;
     if (!ctx || !expr) return -1;
     if (mc_is_aarch64(ctx)) {
         return -1;
     }
-    
-    /* [修改核心]：删除了那段让人错误的 16/32 位 ROM 模式拦截代码 */
-    
+
+    type_name = mc_expr_runtime_type_name(ctx, expr);
+    if (mc_type_name_is_integer_like(type_name) && ctx->machine_bits == 64) {
+        return mc_emit_print_u64_hex_runtime(ctx, mode, expr);
+    }
+
     if (mc_emit_expr(ctx, expr) != 0) return -1;
     if (mode == MC_PRINT_MODE_UEFI) {
         if (mc_emit_mov_rdx_rax(ctx) != 0) return -1;
@@ -4146,15 +4860,15 @@ static int mc_emit_exe_portal_entry(McCtx *ctx, const char *target_name) {
         mc_emit_u8(&ctx->code, 0x65) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* lea r12, [rbp-0x40] */
 
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
-        mc_emit_u32(&ctx->code, EXE_PORTAL_IAT_MARK_NTWRITEFILE) != 0) return -1; /* mov rax, [rip+iat] */
+        mc_emit_u32(&ctx->code, EXE_PORTAL_IAT_MARK_NTWRITEFILE) != 0) return -1;
     if (mc_emit_u8(&ctx->code, 0x49) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
-        mc_emit_u8(&ctx->code, 0x04) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0) return -1; /* mov [r12], rax */
+        mc_emit_u8(&ctx->code, 0x04) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0) return -1;
 
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0 ||
-        mc_emit_u32(&ctx->code, EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS) != 0) return -1; /* mov rax, [rip+iat] */
+        mc_emit_u32(&ctx->code, EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS) != 0) return -1;
     if (mc_emit_u8(&ctx->code, 0x49) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
         mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
-        mc_emit_u8(&ctx->code, EXE_PORTAL_SLOT_NTTERMINATEPROCESS) != 0) return -1; /* mov [r12+8], rax */
+        mc_emit_u8(&ctx->code, EXE_PORTAL_SLOT_NTTERMINATEPROCESS) != 0) return -1;
 
     if (mc_emit_u8(&ctx->code, 0x65) != 0 || mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
         mc_emit_u8(&ctx->code, 0x04) != 0 || mc_emit_u8(&ctx->code, 0x25) != 0 || mc_emit_u32(&ctx->code, 0x60) != 0) return -1; /* mov rax, gs:[0x60] */
@@ -4180,7 +4894,7 @@ static int mc_emit_exe_portal_entry(McCtx *ctx, const char *target_name) {
         mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* sub rsp, 0x20 */
     if (mc_emit_u8(&ctx->code, 0x49) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
         mc_emit_u8(&ctx->code, 0x44) != 0 || mc_emit_u8(&ctx->code, 0x24) != 0 ||
-        mc_emit_u8(&ctx->code, EXE_PORTAL_SLOT_NTTERMINATEPROCESS) != 0) return -1; /* mov rax, [r12+8] */
+        mc_emit_u8(&ctx->code, EXE_PORTAL_SLOT_NTTERMINATEPROCESS) != 0) return -1;
     if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* call rax */
     if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
         mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* add rsp, 0x20 */
@@ -5149,6 +5863,9 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
             if (expr->data.literal.is_float) {
                 return mc_emit_mov_acc_imm(ctx, (int64_t)expr->data.literal.value.float_value);
             }
+            if (expr->data.literal.is_string && expr->data.literal.value.str_value) {
+                return mc_emit_cstring_ptr(ctx, expr->data.literal.value.str_value);
+            }
             return mc_emit_mov_acc_imm(ctx, expr->data.literal.value.int_value);
         case AST_IMPLICIT_PARAM:
             return mc_emit_mov_acc_arg(ctx, expr->data.implicit_param.index);
@@ -5195,6 +5912,7 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
             if (operand->type == AST_IDENT) {
                 const char *name = operand->data.ident.name;
                 McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, name);
+                uint64_t func_off = 0;
                 if (sym && sym->kind == MC_SYM_STACK) {
                     if (mc_is_aarch64(ctx)) {
                         return mc_emit_a64_adjust_reg_imm(ctx, 0, 29, sym->stack_offset);
@@ -5222,6 +5940,16 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                             }
                         }
                     }
+                }
+                if (mc_is_x64(ctx) && mc_ctx_find_func(ctx, name, &func_off) == 0) {
+                    if (ctx->target_format == FORMAT_EXE) {
+                        return mc_emit_win64_callback_thunk_ptr(ctx, name);
+                    }
+                    int64_t disp;
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 || mc_emit_u8(&ctx->code, 0x05) != 0) return -1;
+                    disp = (int64_t)func_off - (int64_t)(ctx->code.size + 4);
+                    if (disp < INT32_MIN || disp > INT32_MAX) return -1;
+                    return mc_emit_u32(&ctx->code, (uint32_t)(int32_t)disp);
                 }
             }
             return mc_emit_mov_acc_imm(ctx, 0);
@@ -5475,6 +6203,28 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                         return mc_emit_expr(ctx, expr->data.call.args[0]);
                     }
                     return mc_emit_mov_acc_imm(ctx, 0);
+                }
+                if (ctx->target_format == FORMAT_EXE) {
+                    const ExeHostCallSpec *host_call = mc_find_exe_host_call(ctx, callee_name);
+                    if (host_call) {
+                        if (expr->data.call.arg_count < host_call->min_args ||
+                            expr->data.call.arg_count > host_call->max_args) {
+                            return -1;
+                        }
+                        if (host_call->dynamic_resolution) {
+                            return mc_emit_dynamic_win_host_call(ctx,
+                                                                 host_call->dll_name,
+                                                                 host_call->host_name,
+                                                                 expr,
+                                                                 host_call->implicit_current_process &&
+                                                                 expr->data.call.arg_count == 1);
+                        }
+                        return mc_emit_exe_host_call(ctx,
+                                                     host_call->iat_marker,
+                                                     expr,
+                                                     host_call->implicit_current_process &&
+                                                     expr->data.call.arg_count == 1);
+                    }
                 }
                 if (strcmp(callee_name, "print") == 0) {
                     McPrintArgs pargs; McPrintMode mode = mc_select_print_mode(ctx); int p;
@@ -6166,6 +6916,18 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
                 if (mc_emit_stmt(ctx, stmt->data.metal_block.statements[i]) != 0) return -1;
             }
             return 0;
+        case AST_WIN_BLOCK: {
+            int saved_in_win_block = ctx->in_win_block;
+            ctx->in_win_block = 1;
+            for (i = 0; i < stmt->data.win_block.stmt_count; i++) {
+                if (mc_emit_stmt(ctx, stmt->data.win_block.statements[i]) != 0) {
+                    ctx->in_win_block = saved_in_win_block;
+                    return -1;
+                }
+            }
+            ctx->in_win_block = saved_in_win_block;
+            return 0;
+        }
         
         case AST_SILICON_BLOCK:
             /* 硅基语义块 - 直接生成x86-64机器码 */
@@ -7162,6 +7924,24 @@ void codegen_destroy(CodeGenerator *gen) {
 }
 
 /* --- 死代码消除：AST 调用图追踪 --- */
+static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags);
+
+static void trace_mark_function_reachable(ASTNode *prog, const char *callee, int *reachable_flags) {
+    int i;
+    if (!prog || !callee || !reachable_flags) return;
+    for (i = 0; i < prog->data.program.decl_count; i++) {
+        ASTNode *decl = prog->data.program.declarations[i];
+        if (!decl || decl->type != AST_FUNC_DECL || !decl->data.func_decl.name) continue;
+        if (strcmp(decl->data.func_decl.name, callee) == 0) {
+            if (!reachable_flags[i]) {
+                reachable_flags[i] = 1;
+                trace_calls(prog, decl->data.func_decl.body, reachable_flags);
+            }
+            break;
+        }
+    }
+}
+
 static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
     if (!node) return;
     switch (node->type) {
@@ -7239,18 +8019,7 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
         case AST_CALL: {
             if (node->data.call.func && node->data.call.func->type == AST_IDENT && node->data.call.func->data.ident.name) {
                 const char *callee = node->data.call.func->data.ident.name;
-                for (int i = 0; i < prog->data.program.decl_count; i++) {
-                    ASTNode *decl = prog->data.program.declarations[i];
-                    if (decl && decl->type == AST_FUNC_DECL && decl->data.func_decl.name) {
-                        if (strcmp(decl->data.func_decl.name, callee) == 0) {
-                            if (!reachable_flags[i]) {
-                                reachable_flags[i] = 1;
-                                trace_calls(prog, decl->data.func_decl.body, reachable_flags);
-                            }
-                            break;
-                        }
-                    }
-                }
+                trace_mark_function_reachable(prog, callee, reachable_flags);
             }
             for (int i=0; i<node->data.call.arg_count; i++)
                 trace_calls(prog, node->data.call.args[i], reachable_flags);
@@ -7279,6 +8048,13 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
                 trace_calls(prog, node->data.tuple_literal.elements[i], reachable_flags);
             break;
         case AST_REFERENCE:
+            if (node->data.reference.operand &&
+                node->data.reference.operand->type == AST_IDENT &&
+                node->data.reference.operand->data.ident.name) {
+                trace_mark_function_reachable(prog,
+                                             node->data.reference.operand->data.ident.name,
+                                             reachable_flags);
+            }
             trace_calls(prog, node->data.reference.operand, reachable_flags);
             break;
         case AST_TYPECAST:
@@ -7291,6 +8067,10 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
         case AST_HW_BLOCK:
             for (int i=0; i<node->data.hw_block.stmt_count; i++)
                 trace_calls(prog, node->data.hw_block.statements[i], reachable_flags);
+            break;
+        case AST_WIN_BLOCK:
+            for (int i=0; i<node->data.win_block.stmt_count; i++)
+                trace_calls(prog, node->data.win_block.statements[i], reachable_flags);
             break;
         case AST_HW_PORT_IO:
             trace_calls(prog, node->data.hw_port_io.operand, reachable_flags);
