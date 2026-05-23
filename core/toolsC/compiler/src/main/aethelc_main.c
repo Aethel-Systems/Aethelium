@@ -147,6 +147,13 @@
 #define EXE_HOST_IAT_MARK_LDRLOADDLL                  0x66F6E6A1U
 #define EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS      0x66F6E6A2U
 #define EXE_HOST_IAT_MARK_RTLINITUNICODESTRING        0x66F6E6A3U
+#define EXE_HOST_IAT_MARK_REGISTERHOTKEY              0x66F6E6A4U
+#define EXE_HOST_IAT_MARK_UNREGISTERHOTKEY            0x66F6E6A5U
+#define EXE_HOST_IAT_MARK_GETCURSORPOS                0x66F6E6A6U
+#define EXE_HOST_IAT_MARK_SETWINDOWPOS                0x66F6E6A7U
+#define EXE_HOST_IAT_MARK_SETFOREGROUNDWINDOW         0x66F6E6A8U
+#define EXE_HOST_IAT_MARK_BRINGWINDOWTOTOP            0x66F6E6A9U
+#define EXE_HOST_IAT_MARK_GETSYSTEMMETRICS            0x66F6E6AAU
 
 typedef struct {
     const char *dll_name;
@@ -203,7 +210,14 @@ static const ExeImportPatchSpec g_exe_import_patch_specs[] = {
     { EXE_IMPORT_USER32, "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 1 },
     { EXE_IMPORT_USER32, "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 1 },
     { EXE_IMPORT_USER32, "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 1 },
-    { EXE_IMPORT_USER32, "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 1 }
+    { EXE_IMPORT_USER32, "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 1 },
+    { EXE_IMPORT_USER32, "RegisterHotKey", EXE_HOST_IAT_MARK_REGISTERHOTKEY, 1 },
+    { EXE_IMPORT_USER32, "UnregisterHotKey", EXE_HOST_IAT_MARK_UNREGISTERHOTKEY, 1 },
+    { EXE_IMPORT_USER32, "GetCursorPos", EXE_HOST_IAT_MARK_GETCURSORPOS, 1 },
+    { EXE_IMPORT_USER32, "SetWindowPos", EXE_HOST_IAT_MARK_SETWINDOWPOS, 1 },
+    { EXE_IMPORT_USER32, "SetForegroundWindow", EXE_HOST_IAT_MARK_SETFOREGROUNDWINDOW, 1 },
+    { EXE_IMPORT_USER32, "BringWindowToTop", EXE_HOST_IAT_MARK_BRINGWINDOWTOTOP, 1 },
+    { EXE_IMPORT_USER32, "GetSystemMetrics", EXE_HOST_IAT_MARK_GETSYSTEMMETRICS, 1 }
 };
 
 static int create_temp_file_path(char *path_out, size_t path_out_sz, const char *prefix) {
@@ -926,6 +940,67 @@ static int parse_rom_size_bytes(const char *text, uint64_t *out_bytes) {
 }
 
 static void print_usage(const char *prog) {
+#ifdef _WIN32
+    fprintf(stderr, "AethelOS Bootstrap Compiler (Stage 1) v2.0.0\n");
+    fprintf(stderr, "Usage:\n");
+    fprintf(stderr, "  Compile: %s <input.ae> /o:<output> [options]\n", prog);
+    fprintf(stderr, "  Verify:  %s /verify-let-contract:<input.let>\n", prog);
+    fprintf(stderr, "  Dump:    %s /dump-reloc-dna:<input.let> [/o:<output.txt>]\n", prog);
+    fprintf(stderr, "  ISO:     %s /iso /o:<output.iso> /kernel:<kernel> /efi:<boot.efi> [/size:<MB>]\n", prog);
+    fprintf(stderr, "\nOutput Formats:\n");
+    fprintf(stderr, "  /emit:<aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p>\n");
+    fprintf(stderr, "\nBare-metal Mach-O (Apple Silicon) Options:\n");
+    fprintf(stderr, "  /emit:macho         Generate bare-metal Mach-O firmware image\n");
+    fprintf(stderr, "  /base:<address>     Physical load address (default: 0x800000000)\n");
+    fprintf(stderr, "\nIM4P Image4 Payload (iBoot) Options:\n");
+    fprintf(stderr, "  /emit:im4p          Generate Image4 container for iBoot\n");
+    fprintf(stderr, "  /is:im4p:<name>     Payload identifier (default: krnl)\n");
+    fprintf(stderr, "\nCompiler Architecture:\n");
+    fprintf(stderr, "  .ae -> AETB         Direct compile path for application runtime binaries\n");
+    fprintf(stderr, "  .ae -> LET          Logical Embryo (the only intermediate format)\n");
+    fprintf(stderr, "  .ae -> LET -> BIN   Contract-validated pure machine code path\n");
+    fprintf(stderr, "  .let -> aki/srv/hda/aetb/bin  Assembly weaver path using Gene-Table metadata\n");
+    fprintf(stderr, "  /verify-let-contract   Validate LET machine contract\n");
+    fprintf(stderr, "  /dump-reloc-dna        Dump relocation DNA list from LET\n");
+    fprintf(stderr, "\nTarget Modes:\n");
+    fprintf(stderr, "  /target:application   Application mode (default)\n");
+    fprintf(stderr, "  /target:kernel        Kernel mode (prohibits C exports)\n");
+    fprintf(stderr, "\nMachine Contract:\n");
+    fprintf(stderr, "  /machine-bits:16|32|64   (default 64)\n");
+    fprintf(stderr, "  /isa:x86|x86_64|aarch64  (default x86)\n");
+    fprintf(stderr, "  /bin-entry:<offset|symbol>\n");
+    fprintf(stderr, "  /bin-flat\n");
+    fprintf(stderr, "  /bin-with-map\n");
+    fprintf(stderr, "\nROM Generation Options:\n");
+    fprintf(stderr, "  /rom                Generate flashable ROM image (.rom)\n");
+    fprintf(stderr, "  /side:<size>        ROM size (default: 8MB). Supports KB/MB/GB\n");
+    fprintf(stderr, "\nCompilation Flags:\n");
+    fprintf(stderr, "  /freestanding       Freestanding mode\n");
+    fprintf(stderr, "  /no-stack-check     Disable stack checking\n");
+    fprintf(stderr, "  /no-default-libs    Don't link default libraries\n");
+    fprintf(stderr, "  /no-shared-libs     Don't use shared libraries\n");
+    fprintf(stderr, "  /bundle-dependencies Bundle inline dependencies\n");
+    fprintf(stderr, "  /bundle-all-dependencies Bundle all dependencies\n");
+    fprintf(stderr, "  /static-only        Static linking only\n");
+    fprintf(stderr, "  /static-complete    Complete static linking\n");
+    fprintf(stderr, "  /app-package        Application package (IYA) format\n");
+    fprintf(stderr, "\nLibrary Inclusion:\n");
+    fprintf(stderr, "  /include-lib:<lib>  Include library source\n");
+    fprintf(stderr, "  /lib:<path>         Include AE library file or directory from AELibraryPATH root\n");
+    fprintf(stderr, "\nDebug and Help Options:\n");
+    fprintf(stderr, "  /debug              Enable debug output during compilation\n");
+    fprintf(stderr, "  /? or /help         Display this help message\n");
+    fprintf(stderr, "\nOther Options:\n");
+    fprintf(stderr, "  /o:<file>           Output file\n");
+    fprintf(stderr, "  /mode:<mode>        sandbox or architect (default: sandbox)\n");
+    fprintf(stderr, "  /O<level>           Optimization level (0-3)\n");
+    fprintf(stderr, "  /optimize:<lvl>     Same as /O\n");
+    fprintf(stderr, "  /v                  Verbose output\n");
+    fprintf(stderr, "  /entry:<sym>        Set entry point symbol (link mode only)\n");
+    fprintf(stderr, "\nExamples:\n");
+    fprintf(stderr, "  Compile to EXE:\n");
+    fprintf(stderr, "    aethelc app.ae /o:app.exe /emit:exe /lib:GUI\\aura\n");
+#else
     fprintf(stderr, "AethelOS Bootstrap Compiler (Stage 1) v2.0.0\n");
     fprintf(stderr, "Usage:\n");
     fprintf(stderr, "  Compile: %s <input.ae> -o <output> [options]\n", prog);
@@ -958,11 +1033,6 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  --bin-entry <offset|symbol>\n");
     fprintf(stderr, "  --bin-flat\n");
     fprintf(stderr, "  --bin-with-map\n");
-    fprintf(stderr, "\nISO Generation Options:\n");
-    fprintf(stderr, "  --iso                Generate hybrid AEFS ISO image\n");
-    fprintf(stderr, "  --kernel <file>      Kernel file to embed\n");
-    fprintf(stderr, "  --efi <file>         EFI boot file\n");
-    fprintf(stderr, "  --size <MB>          ISO size in MB (default: 512)\n");
     fprintf(stderr, "\nROM Generation Options:\n");
     fprintf(stderr, "  --rom                Generate flashable ROM image (.rom)\n");
     fprintf(stderr, "  --side <size>        ROM size (default: 8MB). Supports KB/MB/GB; no suffix means MB\n");
@@ -992,26 +1062,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  --optimize <lvl> Same as -O (e.g. --optimize 2)\n");
     fprintf(stderr, "  -v               Verbose output\n");
     fprintf(stderr, "  --entry <sym>    Set entry point symbol (link mode only)\n");
-    fprintf(stderr, "\nExamples:\n");
-    fprintf(stderr, "  Compile to AETB:\n");
-    fprintf(stderr, "    aethelc app.ae -o app.aetb --include-lib std --include-lib auraui\n");
-    fprintf(stderr, "\n  Compile to BIN through LET contract:\n");
-    fprintf(stderr, "    aethelc app.ae --emit bin --machine-bits 64 -o app.bin --bin-flat\n");
-    fprintf(stderr, "\n  Verify LET contract:\n");
-    fprintf(stderr, "    aethelc --verify-let-contract app.let\n");
-    fprintf(stderr, "\n  Dump reloc DNA:\n");
-    fprintf(stderr, "    aethelc --dump-reloc-dna app.let -o app.reloc.txt\n");
-    fprintf(stderr, "\n  Compile to AKI (kernel):\n");
-    fprintf(stderr, "    aethelc kernel.ae -o kernel.aki --emit aki --target kernel\n");
-    fprintf(stderr, "\n  Compile to UEFI bootloader:\n");
-    fprintf(stderr, "    aethelc bootloader.ae -o BOOTX64.EFI --emit efi\n");
-    fprintf(stderr, "\n  Compile to ROM firmware image:\n");
-    fprintf(stderr, "    aethelc firmware.ae -o firmware.rom --rom --side 16MB\n");
-    fprintf(stderr, "\n  Generate ISO image:\n");
-    fprintf(stderr, "    aethelc --iso -o output.iso --kernel kernel.aki --efi BOOTX64.EFI --size 512\n");
-    fprintf(stderr, "\n  Compile with debug output:\n");
-    fprintf(stderr, "    aethelc app.ae -o app.aetb --debug -v\n");
-
+#endif
 }
 
 static int parse_args(int argc, char **argv, CompilerOptions *opts) {
@@ -1027,7 +1078,7 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     opts->mode = "sandbox";
     opts->optimize_level = 2;
     opts->verbose = 0;
-    opts->debug = 0;           /* 新增：初始化debug标志 */
+    opts->debug = 0;
     opts->output_format = "aetb";
     opts->target_mode = "application";
     opts->emit_format = NULL;
@@ -1043,12 +1094,10 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     opts->dump_reloc_mode = 0;
     opts->dump_reloc_file = NULL;
     opts->dump_reloc_output = NULL;
-    /* ISO模式初始化 */
     opts->is_iso_mode = 0;
     opts->kernel_file = NULL;
     opts->efi_boot_file = NULL;
     opts->iso_size_mb = 512;
-    /* 编译标志初始化 */
     opts->freestanding = 0;
     opts->no_stack_check = 0;
     opts->no_default_libs = 0;
@@ -1061,66 +1110,66 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     opts->rom_mode = 0;
     opts->rom_size_bytes = 8ULL * 1024ULL * 1024ULL;
     opts->rom_fill_byte = 0xFF;
-    /* 库包含初始化 */
     opts->include_lib_count = 0;
     memset(opts->include_libs, 0, sizeof(opts->include_libs));
-    /* Mach-O 和 IM4P 初始化 */
-    opts->macho_phys_base = 0x800000000ULL;  /* Apple Silicon 标准物理基址 */
-    opts->im4p_identifier = "krnl";           /* iBoot 期望的标准标识符 */
+    opts->macho_phys_base = 0x800000000ULL;
+    opts->im4p_identifier = "krnl";
     
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
-            print_usage(argv[0]);
-            return 1;
-        } else if (strcmp(argv[i], "--debug") == 0) {
-            opts->debug = 1;
-            opts->verbose = 1;
-        } else if (strcmp(argv[i], "--iso") == 0) {
-            opts->is_iso_mode = 1;
-        } else if (strcmp(argv[i], "--rom") == 0) {
-            opts->rom_mode = 1;
-            opts->output_format = "rom";
-            opts->emit_format = "rom";
-        } else if (strcmp(argv[i], "--verify-let-contract") == 0) {
-            if (i + 1 < argc) {
+    #ifdef _WIN32
+            if (strcmp(argv[i], "/?") == 0 || strcmp(argv[i], "/help") == 0 || strcmp(argv[i], "-h") == 0) {
+                print_usage(argv[0]);
+                return 1;
+            } else if (strcmp(argv[i], "/debug") == 0) {
+                opts->debug = 1;
+                opts->verbose = 1;
+            } else if (strcmp(argv[i], "/iso") == 0) {
+                opts->is_iso_mode = 1;
+            } else if (strcmp(argv[i], "/rom") == 0) {
+                opts->rom_mode = 1;
+                opts->output_format = "rom";
+                opts->emit_format = "rom";
+            } else if (strncmp(argv[i], "/verify-let-contract:", 21) == 0) {
                 opts->verify_let_mode = 1;
-                opts->verify_let_file = argv[++i];
-            } else {
-                fprintf(stderr, "Error: --verify-let-contract requires a .let file\n");
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--dump-reloc-dna") == 0) {
-            if (i + 1 < argc) {
+                opts->verify_let_file = argv[i] + 21;
+            } else if (strncmp(argv[i], "/dump-reloc-dna:", 16) == 0) {
                 opts->dump_reloc_mode = 1;
-                opts->dump_reloc_file = argv[++i];
-            } else {
-                fprintf(stderr, "Error: --dump-reloc-dna requires a .let file\n");
-                return 1;
-            }
-        } else if (strcmp(argv[i], "-o") == 0) {
-            if (i + 1 < argc) opts->output_file = argv[++i];
-        } else if (strcmp(argv[i], "--kernel") == 0) {
-            if (i + 1 < argc) opts->kernel_file = argv[++i];
-        } else if (strcmp(argv[i], "--efi") == 0) {
-            if (i + 1 < argc) opts->efi_boot_file = argv[++i];
-        } else if (strcmp(argv[i], "--size") == 0) {
-            if (i + 1 < argc) opts->iso_size_mb = atoll(argv[++i]);
-        } else if (strcmp(argv[i], "--side") == 0 || strcmp(argv[i], "--rom-size") == 0) {
-            if (i + 1 < argc) {
+                opts->dump_reloc_file = argv[i] + 16;
+                if (i + 1 < argc && strncmp(argv[i+1], "/o:", 3) == 0) {
+                    opts->dump_reloc_output = argv[++i] + 3;
+                } else if (i + 1 < argc && strncmp(argv[i+1], "/out:", 5) == 0) {
+                    opts->dump_reloc_output = argv[++i] + 5;
+                }
+            } else if (strncmp(argv[i], "/o:", 3) == 0) {
+                opts->output_file = argv[i] + 3;
+            } else if (strncmp(argv[i], "/out:", 5) == 0) {
+                opts->output_file = argv[i] + 5;
+            } else if (strncmp(argv[i], "/kernel:", 8) == 0) {
+                opts->kernel_file = argv[i] + 8;
+            } else if (strncmp(argv[i], "/efi:", 5) == 0) {
+                opts->efi_boot_file = argv[i] + 5;
+            } else if (strncmp(argv[i], "/size:", 6) == 0) {
+                opts->iso_size_mb = atoll(argv[i] + 6);
+            } else if (strncmp(argv[i], "/side:", 6) == 0) {
                 uint64_t bytes = 0;
-                if (parse_rom_size_bytes(argv[++i], &bytes) != 0 || bytes == 0) {
-                    fprintf(stderr, "Error: --side expects size like 8MB/16MB/512KB\n");
+                if (parse_rom_size_bytes(argv[i] + 6, &bytes) != 0 || bytes == 0) {
+                    fprintf(stderr, "Error: /side: expects size like 8MB/16MB/512KB\n");
                     return 1;
                 }
                 opts->rom_size_bytes = bytes;
-            }
-        } else if (strcmp(argv[i], "--entry") == 0) {
-            if (i + 1 < argc) opts->entry_point = argv[++i];
-        } else if (strcmp(argv[i], "--mode") == 0) {
-            if (i + 1 < argc) opts->mode = argv[++i];
-        } else if (strcmp(argv[i], "--emit") == 0 || strcmp(argv[i], "--format") == 0) {
-            if (i + 1 < argc) {
-                const char *fmt = argv[++i];
+            } else if (strncmp(argv[i], "/rom-size:", 10) == 0) {
+                uint64_t bytes = 0;
+                if (parse_rom_size_bytes(argv[i] + 10, &bytes) != 0 || bytes == 0) {
+                    fprintf(stderr, "Error: /rom-size: expects size like 8MB/16MB/512KB\n");
+                    return 1;
+                }
+                opts->rom_size_bytes = bytes;
+            } else if (strncmp(argv[i], "/entry:", 7) == 0) {
+                opts->entry_point = argv[i] + 7;
+            } else if (strncmp(argv[i], "/mode:", 6) == 0) {
+                opts->mode = argv[i] + 6;
+            } else if (strncmp(argv[i], "/emit:", 6) == 0) {
+                const char *fmt = argv[i] + 6;
                 if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
                     strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
                     strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
@@ -1131,221 +1180,276 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                     fprintf(stderr, "Error: unsupported emit format '%s'\n", fmt);
                     return 1;
                 }
-            }
-        } else if (strcmp(argv[i], "--machine-bits") == 0) {
-            if (i + 1 < argc) {
-                opts->machine_bits = atoi(argv[++i]);
-                if (!(opts->machine_bits == 16 || opts->machine_bits == 32 || opts->machine_bits == 64)) {
-                    fprintf(stderr, "Error: --machine-bits must be 16/32/64\n");
-                    return 1;
-                }
-            }
-        } else if (strcmp(argv[i], "--isa") == 0) {
-            if (i + 1 < argc) {
-                opts->isa = argv[++i];
-                if (strcmp(opts->isa, "x86") != 0 &&
-                    strcmp(opts->isa, "x86_64") != 0 &&
-                    strcmp(opts->isa, "aarch64") != 0) {
-                    fprintf(stderr, "Error: --isa must be x86|x86_64|aarch64\n");
-                    return 1;
-                }
-            }
-        } else if (strcmp(argv[i], "--bin-entry") == 0) {
-            if (i + 1 < argc) {
-                opts->bin_entry = argv[++i];
+            } else if (strncmp(argv[i], "/format:", 8) == 0) {
+                const char *fmt = argv[i] + 8;
+                opts->output_format = fmt;
+                opts->emit_format = fmt;
+            } else if (strncmp(argv[i], "/machine-bits:", 14) == 0) {
+                opts->machine_bits = atoi(argv[i] + 14);
+            } else if (strncmp(argv[i], "/isa:", 5) == 0) {
+                opts->isa = argv[i] + 5;
+            } else if (strncmp(argv[i], "/bin-entry:", 11) == 0) {
+                opts->bin_entry = argv[i] + 11;
                 if (parse_u64(opts->bin_entry, &opts->bin_entry_offset) == 0) {
                     opts->has_bin_entry_offset = 1;
                 } else {
                     opts->has_bin_entry_offset = 0;
                 }
-            }
-        } else if (strcmp(argv[i], "--bin-flat") == 0) {
-            opts->bin_flat = 1;
-        } else if (strcmp(argv[i], "--bin-with-map") == 0) {
-            opts->bin_with_map = 1;
-        } else if (strcmp(argv[i], "--target") == 0) {
-            if (i + 1 < argc) {
-                const char *target = argv[++i];
-                if (strcmp(target, "application") == 0 || strcmp(target, "kernel") == 0) {
-                    opts->target_mode = target;
+            } else if (strcmp(argv[i], "/bin-flat") == 0) {
+                opts->bin_flat = 1;
+            } else if (strcmp(argv[i], "/bin-with-map") == 0) {
+                opts->bin_with_map = 1;
+            } else if (strncmp(argv[i], "/target:", 8) == 0) {
+                opts->target_mode = argv[i] + 8;
+            } else if (strcmp(argv[i], "/freestanding") == 0) {
+                opts->freestanding = 1;
+            } else if (strcmp(argv[i], "/no-stack-check") == 0) {
+                opts->no_stack_check = 1;
+            } else if (strcmp(argv[i], "/no-default-libs") == 0) {
+                opts->no_default_libs = 1;
+            } else if (strcmp(argv[i], "/no-shared-libs") == 0) {
+                opts->no_shared_libs = 1;
+            } else if (strcmp(argv[i], "/bundle-dependencies") == 0) {
+                opts->bundle_dependencies = 1;
+            } else if (strcmp(argv[i], "/bundle-all-dependencies") == 0) {
+                opts->bundle_all_dependencies = 1;
+            } else if (strcmp(argv[i], "/static-only") == 0) {
+                opts->static_only = 1;
+            } else if (strcmp(argv[i], "/static-complete") == 0) {
+                opts->static_complete = 1;
+            } else if (strcmp(argv[i], "/app-package") == 0) {
+                opts->app_package = 1;
+            } else if (strncmp(argv[i], "/include-lib:", 13) == 0) {
+                if (opts->include_lib_count < 32) {
+                    opts->include_libs[opts->include_lib_count++] = argv[i] + 13;
                 } else {
-                    fprintf(stderr, "Error: Invalid target '%s'. Valid: application, kernel\n", target);
+                    fprintf(stderr, "Error: Too many libraries to include (max 32)\n");
                     return 1;
                 }
-            }
-        } else if (strcmp(argv[i], "--freestanding") == 0) {
-            opts->freestanding = 1;
-        } else if (strcmp(argv[i], "--no-stack-check") == 0) {
-            opts->no_stack_check = 1;
-        } else if (strcmp(argv[i], "--no-default-libs") == 0) {
-            opts->no_default_libs = 1;
-        } else if (strcmp(argv[i], "--no-shared-libs") == 0) {
-            opts->no_shared_libs = 1;
-        } else if (strcmp(argv[i], "--bundle-dependencies") == 0) {
-            opts->bundle_dependencies = 1;
-        } else if (strcmp(argv[i], "--bundle-all-dependencies") == 0) {
-            opts->bundle_all_dependencies = 1;
-        } else if (strcmp(argv[i], "--static-only") == 0) {
-            opts->static_only = 1;
-        } else if (strcmp(argv[i], "--static-complete") == 0) {
-            opts->static_complete = 1;
-        } else if (strcmp(argv[i], "--app-package") == 0) {
-            opts->app_package = 1;
-        } else if (strcmp(argv[i], "--include-lib") == 0) {
-            if (i + 1 < argc && opts->include_lib_count < 32) {
-                opts->include_libs[opts->include_lib_count++] = argv[++i];
-            } else if (opts->include_lib_count >= 32) {
-                fprintf(stderr, "Error: Too many libraries to include (max 32)\n");
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--lib") == 0) {
-            if (i + 1 < argc) {
-                if (append_env_library_path(opts, argv[++i]) != 0) {
+            } else if (strncmp(argv[i], "/lib:", 5) == 0) {
+                if (append_env_library_path(opts, argv[i] + 5) != 0) {
                     return 1;
                 }
-            } else {
-                fprintf(stderr, "Error: --lib requires a file or directory path\n");
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--is") == 0) {
-            /* --is im4p <identifier>: 指定 IM4P 标识符 */
-            if (i + 2 < argc && strcmp(argv[i+1], "im4p") == 0) {
+            } else if (strncmp(argv[i], "/is:im4p:", 9) == 0) {
                 opts->emit_format = "im4p";
                 opts->output_format = "im4p";
-                opts->im4p_identifier = argv[i+2];
-                i += 2;
-            } else {
-                fprintf(stderr, "Error: --is requires 'im4p <identifier>'\n");
-                return 1;
-            }
-        } else if (strcmp(argv[i], "--base") == 0) {
-            /* --base <address>: Mach-O 物理基址 (16进制格式) */
-            if (i + 1 < argc) {
-                if (parse_u64(argv[++i], &opts->macho_phys_base) != 0) {
-                    fprintf(stderr, "Error: --base requires a valid hexadecimal address\n");
+                opts->im4p_identifier = argv[i] + 9;
+            } else if (strncmp(argv[i], "/base:", 6) == 0) {
+                if (parse_u64(argv[i] + 6, &opts->macho_phys_base) != 0) {
+                    fprintf(stderr, "Error: /base: requires a valid hexadecimal address\n");
                     return 1;
                 }
-            } else {
-                fprintf(stderr, "Error: --base requires an address argument\n");
+            } else if (strncmp(argv[i], "/O", 2) == 0) {
+                opts->optimize_level = atoi(argv[i] + 2);
+            } else if (strncmp(argv[i], "/optimize:", 10) == 0) {
+                opts->optimize_level = atoi(argv[i] + 10);
+            } else if (strcmp(argv[i], "/v") == 0 || strcmp(argv[i], "/verbose") == 0) {
+                opts->verbose = 1;
+            } else if (argv[i][0] == '/') {
+                fprintf(stderr, "Unknown option: %s\n", argv[i]);
                 return 1;
-            }
-        } else if (strncmp(argv[i], "-O", 2) == 0) {
-            // 处理 -O2
-            if (strlen(argv[i]) > 2) {
-                opts->optimize_level = atoi(&argv[i][2]);
-            } else if (i + 1 < argc) {
-                opts->optimize_level = atoi(argv[++i]);
-            }
-        } else if (strcmp(argv[i], "--optimize") == 0) {
-            // 处理 --optimize O2
-            if (i + 1 < argc) {
-                char *val = argv[++i];
-                if (val[0] == 'O') {
-                    opts->optimize_level = atoi(val + 1);
+            } else {
+                if (opts->input_count < MAX_INPUT_FILES) {
+                    opts->input_files[opts->input_count++] = argv[i];
                 } else {
-                    opts->optimize_level = atoi(val);
+                    fprintf(stderr, "Error: Too many input files\n");
+                    return 1;
                 }
             }
-        } else if (strcmp(argv[i], "-v") == 0) {
-            opts->verbose = 1;
-        } else if (argv[i][0] == '-') {
-            fprintf(stderr, "Unknown option: %s\n", argv[i]);
-            return 1;
-        } else {
-            // 输入文件
-            if (opts->input_count < MAX_INPUT_FILES) {
-                opts->input_files[opts->input_count++] = argv[i];
-            } else {
-                fprintf(stderr, "Error: Too many input files\n");
+    #else
+            if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
+                print_usage(argv[0]);
                 return 1;
+            } else if (strcmp(argv[i], "--debug") == 0) {
+                opts->debug = 1;
+                opts->verbose = 1;
+            } else if (strcmp(argv[i], "--iso") == 0) {
+                opts->is_iso_mode = 1;
+            } else if (strcmp(argv[i], "--rom") == 0) {
+                opts->rom_mode = 1;
+                opts->output_format = "rom";
+                opts->emit_format = "rom";
+            } else if (strcmp(argv[i], "--verify-let-contract") == 0) {
+                if (i + 1 < argc) {
+                    opts->verify_let_mode = 1;
+                    opts->verify_let_file = argv[++i];
+                } else {
+                    fprintf(stderr, "Error: --verify-let-contract requires a .let file\n");
+                    return 1;
+                }
+            } else if (strcmp(argv[i], "--dump-reloc-dna") == 0) {
+                if (i + 1 < argc) {
+                    opts->dump_reloc_mode = 1;
+                    opts->dump_reloc_file = argv[++i];
+                } else {
+                    fprintf(stderr, "Error: --dump-reloc-dna requires a .let file\n");
+                    return 1;
+                }
+            } else if (strcmp(argv[i], "-o") == 0) {
+                if (i + 1 < argc) opts->output_file = argv[++i];
+            } else if (strcmp(argv[i], "--kernel") == 0) {
+                if (i + 1 < argc) opts->kernel_file = argv[++i];
+            } else if (strcmp(argv[i], "--efi") == 0) {
+                if (i + 1 < argc) opts->efi_boot_file = argv[++i];
+            } else if (strcmp(argv[i], "--size") == 0) {
+                if (i + 1 < argc) opts->iso_size_mb = atoll(argv[++i]);
+            } else if (strcmp(argv[i], "--side") == 0 || strcmp(argv[i], "--rom-size") == 0) {
+                if (i + 1 < argc) {
+                    uint64_t bytes = 0;
+                    if (parse_rom_size_bytes(argv[++i], &bytes) != 0 || bytes == 0) {
+                        fprintf(stderr, "Error: --side expects size like 8MB/16MB/512KB\n");
+                        return 1;
+                    }
+                    opts->rom_size_bytes = bytes;
+                }
+            } else if (strcmp(argv[i], "--entry") == 0) {
+                if (i + 1 < argc) opts->entry_point = argv[++i];
+            } else if (strcmp(argv[i], "--mode") == 0) {
+                if (i + 1 < argc) opts->mode = argv[++i];
+            } else if (strcmp(argv[i], "--emit") == 0 || strcmp(argv[i], "--format") == 0) {
+                if (i + 1 < argc) {
+                    const char *fmt = argv[++i];
+                    if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
+                        strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
+                        strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
+                        strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0) {
+                        opts->output_format = fmt;
+                        opts->emit_format = fmt;
+                    } else {
+                        fprintf(stderr, "Error: unsupported emit format '%s'\n", fmt);
+                        return 1;
+                    }
+                }
+            } else if (strcmp(argv[i], "--machine-bits") == 0) {
+                if (i + 1 < argc) {
+                    opts->machine_bits = atoi(argv[++i]);
+                    if (!(opts->machine_bits == 16 || opts->machine_bits == 32 || opts->machine_bits == 64)) {
+                        fprintf(stderr, "Error: --machine-bits must be 16/32/64\n");
+                        return 1;
+                    }
+                }
+            } else if (strcmp(argv[i], "--isa") == 0) {
+                if (i + 1 < argc) {
+                    opts->isa = argv[++i];
+                    if (strcmp(opts->isa, "x86") != 0 &&
+                        strcmp(opts->isa, "x86_64") != 0 &&
+                        strcmp(opts->isa, "aarch64") != 0) {
+                        fprintf(stderr, "Error: --isa must be x86|x86_64|aarch64\n");
+                        return 1;
+                    }
+                }
+            } else if (strcmp(argv[i], "--bin-entry") == 0) {
+                if (i + 1 < argc) {
+                    opts->bin_entry = argv[++i];
+                    if (parse_u64(opts->bin_entry, &opts->bin_entry_offset) == 0) {
+                        opts->has_bin_entry_offset = 1;
+                    } else {
+                        opts->has_bin_entry_offset = 0;
+                    }
+                }
+            } else if (strcmp(argv[i], "--bin-flat") == 0) {
+                opts->bin_flat = 1;
+            } else if (strcmp(argv[i], "--bin-with-map") == 0) {
+                opts->bin_with_map = 1;
+            } else if (strcmp(argv[i], "--target") == 0) {
+                if (i + 1 < argc) {
+                    const char *target = argv[++i];
+                    if (strcmp(target, "application") == 0 || strcmp(target, "kernel") == 0) {
+                        opts->target_mode = target;
+                    } else {
+                        fprintf(stderr, "Error: Invalid target '%s'. Valid: application, kernel\n", target);
+                        return 1;
+                    }
+                }
+            } else if (strcmp(argv[i], "--freestanding") == 0) {
+                opts->freestanding = 1;
+            } else if (strcmp(argv[i], "--no-stack-check") == 0) {
+                opts->no_stack_check = 1;
+            } else if (strcmp(argv[i], "--no-default-libs") == 0) {
+                opts->no_default_libs = 1;
+            } else if (strcmp(argv[i], "--no-shared-libs") == 0) {
+                opts->no_shared_libs = 1;
+            } else if (strcmp(argv[i], "--bundle-dependencies") == 0) {
+                opts->bundle_dependencies = 1;
+            } else if (strcmp(argv[i], "--bundle-all-dependencies") == 0) {
+                opts->bundle_all_dependencies = 1;
+            } else if (strcmp(argv[i], "--static-only") == 0) {
+                opts->static_only = 1;
+            } else if (strcmp(argv[i], "--static-complete") == 0) {
+                opts->static_complete = 1;
+            } else if (strcmp(argv[i], "--app-package") == 0) {
+                opts->app_package = 1;
+            } else if (strcmp(argv[i], "--include-lib") == 0) {
+                if (i + 1 < argc && opts->include_lib_count < 32) {
+                    opts->include_libs[opts->include_lib_count++] = argv[++i];
+                } else if (opts->include_lib_count >= 32) {
+                    fprintf(stderr, "Error: Too many libraries to include (max 32)\n");
+                    return 1;
+                }
+            } else if (strcmp(argv[i], "--lib") == 0) {
+                if (i + 1 < argc) {
+                    if (append_env_library_path(opts, argv[++i]) != 0) {
+                        return 1;
+                    }
+                } else {
+                    fprintf(stderr, "Error: --lib requires a file or directory path\n");
+                    return 1;
+                }
+            } else if (strcmp(argv[i], "--is") == 0) {
+                /* --is im4p <identifier>: 指定 IM4P 标识符 */
+                if (i + 2 < argc && strcmp(argv[i+1], "im4p") == 0) {
+                    opts->emit_format = "im4p";
+                    opts->output_format = "im4p";
+                    opts->im4p_identifier = argv[i+2];
+                    i += 2;
+                } else {
+                    fprintf(stderr, "Error: --is requires 'im4p <identifier>'\n");
+                    return 1;
+                }
+            } else if (strcmp(argv[i], "--base") == 0) {
+                /* --base <address>: Mach-O 物理基址 (16进制格式) */
+                if (i + 1 < argc) {
+                    if (parse_u64(argv[++i], &opts->macho_phys_base) != 0) {
+                        fprintf(stderr, "Error: --base requires a valid hexadecimal address\n");
+                        return 1;
+                    }
+                } else {
+                    fprintf(stderr, "Error: --base requires an address argument\n");
+                    return 1;
+                }
+            } else if (strncmp(argv[i], "-O", 2) == 0) {
+                // 处理 -O2
+                if (strlen(argv[i]) > 2) {
+                    opts->optimize_level = atoi(&argv[i][2]);
+                } else if (i + 1 < argc) {
+                    opts->optimize_level = atoi(argv[++i]);
+                }
+            } else if (strcmp(argv[i], "--optimize") == 0) {
+                // 处理 --optimize O2
+                if (i + 1 < argc) {
+                    char *val = argv[++i];
+                    if (val[0] == 'O') {
+                        opts->optimize_level = atoi(val + 1);
+                    } else {
+                        opts->optimize_level = atoi(val);
+                    }
+                }
+            } else if (strcmp(argv[i], "-v") == 0) {
+                opts->verbose = 1;
+            } else if (argv[i][0] == '-') {
+                fprintf(stderr, "Unknown option: %s\n", argv[i]);
+                return 1;
+            } else {
+                // 输入文件
+                if (opts->input_count < MAX_INPUT_FILES) {
+                    opts->input_files[opts->input_count++] = argv[i];
+                } else {
+                    fprintf(stderr, "Error: Too many input files\n");
+                    return 1;
+                }
             }
-        }
+    #endif
     }
-
-    if (opts->verify_let_mode || opts->dump_reloc_mode) {
-        if (opts->dump_reloc_mode && opts->output_file && strcmp(opts->output_file, "a.out") != 0) {
-            opts->dump_reloc_output = opts->output_file;
-        }
-        return 0;
-    }
-
-    if (opts->bin_entry && !opts->has_bin_entry_offset) {
-        fprintf(stderr,
-                "Error: --bin-entry symbol mode is not available in Stage1; use numeric offset\n");
-        return 1;
-    }
-
-    if (strcmp(opts->isa, "aarch64") == 0 && opts->machine_bits != 64) {
-        fprintf(stderr, "Error: aarch64 requires --machine-bits 64\n");
-        return 1;
-    }
-    if (strcmp(opts->isa, "x86_64") == 0 && opts->machine_bits != 64) {
-        fprintf(stderr, "Error: x86_64 requires --machine-bits 64\n");
-        return 1;
-    }
-    
-    /* 验证必需的参数 */
-    if (opts->is_iso_mode) {
-        if (!opts->kernel_file || !opts->efi_boot_file) {
-            fprintf(stderr, "Error: ISO mode requires --kernel and --efi options\n");
-            return 1;
-        }
-        /* ISO模式不需要输入文件 */
-    } else if (opts->input_count == 0) {
-        fprintf(stderr, "Error: No input files specified\n");
-        return 1;
-    }
-
-    if (opts->bundle_all_dependencies) {
-        opts->bundle_dependencies = 1;
-    }
-    if (opts->static_complete) {
-        opts->static_only = 1;
-    }
-    if (opts->rom_mode && opts->emit_format && strcmp(opts->emit_format, "rom") != 0) {
-        fprintf(stderr, "Error: --rom cannot be combined with --emit %s\n", opts->emit_format);
-        return 1;
-    }
-    if (opts->rom_mode) {
-        if (!(opts->machine_bits == 16 || opts->machine_bits == 32 || opts->machine_bits == 64)) {
-            fprintf(stderr, "Error: ROM firmware requires --machine-bits 16/32/64\n");
-            return 1;
-        }
-        if (opts->machine_bits == 64 && strcmp(opts->isa, "x86_64") != 0) {
-            fprintf(stderr, "Error: 64-bit ROM firmware requires --isa x86_64\n");
-            return 1;
-        }
-    }
-
-    /* Mach-O 验证：必须为 aarch64 + 64位 */
-    if (opts->emit_format && strcmp(opts->emit_format, "macho") == 0) {
-        if (strcmp(opts->isa, "aarch64") != 0) {
-            fprintf(stderr, "Error: Mach-O firmware requires --isa aarch64\n");
-            return 1;
-        }
-        if (opts->machine_bits != 64) {
-            fprintf(stderr, "Error: Mach-O firmware requires --machine-bits 64\n");
-            return 1;
-        }
-    }
-
-    /* IM4P 验证：要求 Mach-O 作为载荷生成器 */
-    if (opts->emit_format && strcmp(opts->emit_format, "im4p") == 0) {
-        if (strcmp(opts->isa, "aarch64") != 0) {
-            fprintf(stderr, "Error: IM4P container requires --isa aarch64\n");
-            return 1;
-        }
-        if (opts->machine_bits != 64) {
-            fprintf(stderr, "Error: IM4P container requires --machine-bits 64\n");
-            return 1;
-        }
-        if (!opts->im4p_identifier || opts->im4p_identifier[0] == '\0') {
-            fprintf(stderr, "Error: IM4P container requires --is im4p <identifier>\n");
-            return 1;
-        }
-    }
-    
-    return 0;
 }
 
 static char* read_file(const char *filename) {

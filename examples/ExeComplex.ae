@@ -1,0 +1,140 @@
+// -----------------------------------------------------------------------------
+// App Entry: Aethel Architect Workspace
+// Framework: Aura (DWM Mica / Immersive Dark) + Flux (Node Canvas)
+// Upgraded: SwiftUI-like Declarative Engine & Advanced NT IO Background Polling
+// -----------------------------------------------------------------------------
+
+var global/pulse/tick: UInt64 = 0
+var global/iocp/handle: UInt64 = 0
+var global/root/view: ptr<Flux/UI/Node> = nil
+
+func BackgroundWorkerThread(arg: UInt64) : UInt64 {
+    loop {
+        // Advanced IO: Poll IOCP
+        let key: UInt64 = 0
+        let val1: UInt64 = 0
+        let val2: UInt64 = 0
+        let val3: UInt64 = 0
+        let timeout: UInt64 = 0
+        Win/IO/Async/RemoveCompletion(global/iocp/handle, &key, &val1, &val2, &val3, &timeout)
+
+        // Read Registry
+        let obj_attrs: Win/IO/Reg/ObjectAttributes
+        obj_attrs\length = 24
+        
+        let sleep_time: Int64 = -10000000 // 1 second
+        Win/IO/Thread/Suspend(0, cast<ptr<UInt32>>(0)) // Dummy
+        win { ntdll/NtDelayExecution(0, &sleep_time) }
+    }
+    return 0
+}
+
+func BuildDeclarativeUI() : ptr<Flux/UI/Node> {
+    let root_children: ptr<UInt64> = cast<ptr<UInt64>>(malloc_like_allocator(16))
+    let hstack_children: ptr<UInt64> = cast<ptr<UInt64>>(malloc_like_allocator(24))
+    let zstack_children: ptr<UInt64> = cast<ptr<UInt64>>(malloc_like_allocator(16))
+    
+    let title: ptr<Flux/UI/Node> = Flux/UI/Text(cast<UInt64>("AETHEL ARCHITECT // FLUX DECLARATIVE PIPELINE"), Flux/Color/RGB(250, 250, 250), 24)
+    title\padding_x = 20
+    title\padding_y = 20
+    
+    let sidebar: ptr<Flux/UI/Node> = Flux/UI/RoundedRectangle(Flux/Color/RGB(30, 30, 32), 15)
+    sidebar\padding_x = 10
+    sidebar\padding_y = 10
+    
+    let canvas_bg: ptr<Flux/UI/Node> = Flux/UI/RoundedRectangle(Flux/Color/RGB(20, 20, 22), 20)
+    let canvas_text: ptr<Flux/UI/Node> = Flux/UI/Text(cast<UInt64>("SYSTEM TELEMETRY ONLINE // IOCP POLLING"), Flux/Color/RGB(100, 200, 255), 18)
+    
+    zstack_children[0] = cast<UInt64>(canvas_bg)
+    zstack_children[1] = cast<UInt64>(canvas_text)
+    let canvas: ptr<Flux/UI/Node> = Flux/UI/ZStack(zstack_children, 2)
+    canvas\flex_grow = 3
+    canvas\padding_x = 10
+    canvas\padding_y = 10
+    
+    let telemetry: ptr<Flux/UI/Node> = Flux/UI/RoundedRectangle(Flux/Color/RGB(40, 40, 45), 10)
+    telemetry\padding_x = 10
+    telemetry\padding_y = 10
+    
+    hstack_children[0] = cast<UInt64>(sidebar)
+    hstack_children[1] = cast<UInt64>(canvas)
+    hstack_children[2] = cast<UInt64>(telemetry)
+    let body: ptr<Flux/UI/Node> = Flux/UI/HStack(hstack_children, 3)
+    body\flex_grow = 1
+    
+    root_children[0] = cast<UInt64>(title)
+    root_children[1] = cast<UInt64>(body)
+    
+    let root: ptr<Flux/UI/Node> = Flux/UI/VStack(root_children, 2)
+    root\padding_x = 10
+    root\padding_y = 10
+    
+    return root
+}
+
+func malloc_like_allocator(size: Int32) : UInt64 {
+    let base: UInt64 = 0
+    let sz: UInt64 = size as UInt64
+    win { ntdll/NtAllocateVirtualMemory(cast<UInt64>(-1), &base, 0, &sz, 0x3000, 0x04) }
+    return base
+}
+
+func Demo/AuraFlux/wndproc(hwnd: UInt64, msg: UInt32, wparam: UInt64, lparam: Int64) : Int64 {
+    if msg == Aura/Host/WM/TIMER {
+        global/pulse/tick = global/pulse/tick + 1
+        if (global/pulse/tick % 60) == 0 {
+            win { user32/SetWindowTextA(hwnd, cast<ptr<UInt8>>(cast<UInt64>("Aethel Architect // Flux Pipeline [SYNC: LIVE]"))) }
+        }
+        
+        let rect: Win/GDI/Rect
+        win { user32/GetClientRect(hwnd, &rect) }
+        Flux/UI/RenderRoot(hwnd, global/root/view, rect\right, rect\bottom)
+        
+        return 0
+    }
+    
+    if msg == Aura/Host/WM/PAINT {
+        let rect: Win/GDI/Rect
+        win { user32/GetClientRect(hwnd, &rect) }
+        Flux/UI/RenderRoot(hwnd, global/root/view, rect\right, rect\bottom)
+        win { user32/ValidateRect(hwnd, 0) }
+        return 0
+    }
+    
+    return Aura/Host/wndproc/default(hwnd, msg, wparam, lparam)
+}
+
+@entry
+func start() : UInt64 {
+    Win/IO/Async/CreateCompletion(&global/iocp/handle, 0xF003F, cast<ptr<Win/IO/Reg/ObjectAttributes>>(0), 0)
+    
+    let thread_handle: UInt64 = 0
+    win { ntdll/NtCreateThreadEx(&thread_handle, 0x1FFFFF, 0, cast<UInt64>(-1), cast<UInt64>(&BackgroundWorkerThread), 0, 0, 0, 0, 0, 0) }
+    
+    let class/name: UInt64 = cast<UInt64>("AethelArchitectClass")
+    let window/title: UInt64 = cast<UInt64>("AethelOS Workspace // Architect Root")
+
+    let wc: Aura/Host/WndClassA
+    let msg: Aura/Host/Msg
+
+    if Aura/Host/class/init(&wc, class/name, cast<UInt64>(&Demo/AuraFlux/wndproc)) == 0 {
+        Aura/Host/alert/error(cast<UInt64>("FATAL // AURA COMPOSE"),
+                              cast<UInt64>("RegisterClassA failed."))
+        return 10
+    }
+
+    let width: Int32 = 1600
+    let height: Int32 = 900
+    let pos/x: Int32 = 160
+    let pos/y: Int32 = 90
+
+    let hwnd: UInt64 = Aura/Host/window/create(0, class/name, window/title, Aura/Host/WS/OVERLAPPED/WINDOW, pos/x, pos/y, width, height, 0, 0, 0)
+    if hwnd == 0 { return 11 }
+
+    Aura/Host/apply/glass/frame(hwnd)
+    Aura/Host/window/show(hwnd)
+
+    global/root/view = BuildDeclarativeUI()
+
+    return Aura/Host/run/loop(&msg, hwnd, 1, 16)
+}

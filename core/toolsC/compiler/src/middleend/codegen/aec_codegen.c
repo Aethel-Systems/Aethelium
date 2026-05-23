@@ -16,8 +16,8 @@
  */
 
 /*
- * AethelOS Aethelium Compiler - Code Generator Implementation
- * 代码生成器实现：生成 AETB 二进制格式
+ * Aethel Aethelium Compiler - Code Generator Implementation
+ * 代码生成器实现：彻底推翻IR设计，直接从AST生成目标平台的机器码，引入IR是多余的、增加复杂度且性能不佳，直接从AST生成机器码更高效、更简单、更符合工业级编译器的设计原则，也是Aethelium的最初理念。
  */
 
 #include "aec_codegen.h"
@@ -94,6 +94,13 @@
 #define EXE_HOST_IAT_MARK_LDRLOADDLL                0x66F6E6A1U
 #define EXE_HOST_IAT_MARK_LDRGETPROCEDUREADDRESS    0x66F6E6A2U
 #define EXE_HOST_IAT_MARK_RTLINITUNICODESTRING      0x66F6E6A3U
+#define EXE_HOST_IAT_MARK_REGISTERHOTKEY            0x66F6E6A4U
+#define EXE_HOST_IAT_MARK_UNREGISTERHOTKEY          0x66F6E6A5U
+#define EXE_HOST_IAT_MARK_GETCURSORPOS              0x66F6E6A6U
+#define EXE_HOST_IAT_MARK_SETWINDOWPOS              0x66F6E6A7U
+#define EXE_HOST_IAT_MARK_SETFOREGROUNDWINDOW       0x66F6E6A8U
+#define EXE_HOST_IAT_MARK_BRINGWINDOWTOTOP          0x66F6E6A9U
+#define EXE_HOST_IAT_MARK_GETSYSTEMMETRICS          0x66F6E6AAU
 
 /* 工业级别的错误报告函数 */
 static void codegen_error(CodeGenerator *gen, const char *fmt, ...) {
@@ -1692,7 +1699,8 @@ typedef enum {
     MC_SYM_STACK = 1,
     MC_SYM_REG_ALIAS = 2,
     MC_SYM_CONST = 3,
-    MC_SYM_VEC_ALIAS = 4
+    MC_SYM_VEC_ALIAS = 4,
+    MC_SYM_GLOBAL = 5
 } McSymbolKind;
 
 typedef struct {
@@ -1760,6 +1768,9 @@ typedef struct {
     McSymbol *const_symbols;
     size_t const_symbol_count;
     size_t const_symbol_cap;
+    McSymbol *global_symbols;
+    size_t global_symbol_count;
+    size_t global_symbol_cap;
     McStructInfo *structs;
     size_t struct_count;
     size_t struct_cap;
@@ -1782,6 +1793,7 @@ static int mc_emit_expr_a64(McCtx *ctx, ASTNode *expr);
 static int mc_emit_stmt_a64(McCtx *ctx, ASTNode *stmt);
 static int mc_emit_function_a64(McCtx *ctx, ASTNode *decl);
 static int mc_emit_embed_blob_and_lea_reg(McCtx *ctx, const uint8_t *blob, size_t blob_len, int dst_reg_low3);
+static int mc_emit_global_addr(McCtx *ctx, const McSymbol *sym, int dst_reg_low3);
 static int mc_patch_u32(McBuf *b, size_t off, uint32_t v);
 static McStructInfo *mc_find_struct(McCtx *ctx, const char *name);
 static uint32_t mc_type_size_from_name(McCtx *ctx, const char *type_name);
@@ -2396,10 +2408,16 @@ static uint32_t mc_type_size_from_name(McCtx *ctx, const char *type_name) {
         }
     }
     
-    if (strcmp(t, "UInt8") == 0 || strcmp(t, "Int8") == 0 || strcmp(t, "Bool") == 0 || strcmp(t, "bool") == 0) return 1;
-    if (strcmp(t, "UInt16") == 0 || strcmp(t, "Int16") == 0) return 2;
-    if (strcmp(t, "UInt32") == 0 || strcmp(t, "Int32") == 0) return 4;
-    if (strcmp(t, "UInt64") == 0 || strcmp(t, "Int64") == 0 || strcmp(t, "PhysAddr") == 0 || strcmp(t, "VirtAddr") == 0) return 8;
+    if (strcmp(t, "UInt8") == 0 || strcmp(t, "Int8") == 0 ||
+        strcmp(t, "u8") == 0 || strcmp(t, "i8") == 0 ||
+        strcmp(t, "Bool") == 0 || strcmp(t, "bool") == 0) return 1;
+    if (strcmp(t, "UInt16") == 0 || strcmp(t, "Int16") == 0 ||
+        strcmp(t, "u16") == 0 || strcmp(t, "i16") == 0) return 2;
+    if (strcmp(t, "UInt32") == 0 || strcmp(t, "Int32") == 0 ||
+        strcmp(t, "u32") == 0 || strcmp(t, "i32") == 0) return 4;
+    if (strcmp(t, "UInt64") == 0 || strcmp(t, "Int64") == 0 ||
+        strcmp(t, "u64") == 0 || strcmp(t, "i64") == 0 ||
+        strcmp(t, "PhysAddr") == 0 || strcmp(t, "VirtAddr") == 0) return 8;
     if (strncmp(t, "ptr<", 4) == 0 || strncmp(t, "view<", 5) == 0 || strncmp(t, "reg<", 4) == 0 || strncmp(t, "port<", 5) == 0) return 8;
     if (strncmp(t, "vector<", 7) == 0) {
         const char *comma = strrchr(t, ',');
@@ -2489,6 +2507,17 @@ static int mc_add_const_symbol(McCtx *ctx, const char *name, uint64_t value) {
     sym.kind = MC_SYM_CONST;
     sym.const_value = value;
     return mc_add_symbol(&ctx->const_symbols, &ctx->const_symbol_count, &ctx->const_symbol_cap, &sym);
+}
+
+static int mc_add_global_symbol(McCtx *ctx, const char *name, const char *type_name, uint64_t truth_offset) {
+    McSymbol sym;
+    if (!ctx || !name) return -1;
+    memset(&sym, 0, sizeof(sym));
+    sym.name = (char *)name;
+    sym.kind = MC_SYM_GLOBAL;
+    sym.const_value = truth_offset;
+    sym.type_name = (char *)type_name;
+    return mc_add_symbol(&ctx->global_symbols, &ctx->global_symbol_count, &ctx->global_symbol_cap, &sym);
 }
 
 static void mc_reset_locals(McCtx *ctx) {
@@ -2716,6 +2745,7 @@ static int mc_symbol_pointer_base_to_rax(McCtx *ctx, const McSymbol *sym) {
     if (sym->kind == MC_SYM_PARAM) return mc_emit_mov_acc_arg(ctx, sym->param_index);
     if (sym->kind == MC_SYM_STACK) return mc_emit_load_acc_from_stack(ctx, sym->stack_offset);
     if (sym->kind == MC_SYM_REG_ALIAS) return mc_emit_mov_acc_from_reg_id(ctx, sym->reg_id);
+    if (sym->kind == MC_SYM_GLOBAL) return mc_emit_global_addr(ctx, sym, 0);
     return -1;
 }
 
@@ -2749,6 +2779,7 @@ static int mc_symbol_base_addr_to_rax(McCtx *ctx, const McSymbol *sym) {
         }
     }
     if (sym->kind == MC_SYM_REG_ALIAS) return mc_emit_mov_acc_from_reg_id(ctx, sym->reg_id);
+    if (sym->kind == MC_SYM_GLOBAL) return mc_emit_global_addr(ctx, sym, 0);
     return -1;
 }
 
@@ -2756,7 +2787,10 @@ static int mc_symbol_type_is_ptr_like(const McSymbol *sym) {
     const char *type_name;
     if (!sym || !sym->type_name) return 0;
     type_name = mc_trim_type_prefixes(sym->type_name);
-    return (strncmp(type_name, "ptr<", 4) == 0 || strncmp(type_name, "view<", 5) == 0);
+    return (strncmp(type_name, "ptr<", 4) == 0 ||
+            strncmp(type_name, "view<", 5) == 0 ||
+            strncmp(type_name, "[*]", 3) == 0 ||
+            type_name[0] == '*');
 }
 
 static int mc_resolve_access_layout(McCtx *ctx, ASTNode *access, McSymbol **obj_sym, McStructField **field_out) {
@@ -2793,13 +2827,26 @@ static uint32_t mc_ptr_elem_size_from_type(McCtx *ctx, const char *type_name) {
     char elem[128];
     if (!type_name) return 1;
     type_name = mc_trim_type_prefixes(type_name);
-    if (strncmp(type_name, "ptr<", 4) != 0) return 1;
-    start = type_name + 4;
-    end = strchr(start, '>');
-    if (!end || end <= start) return 1;
-    if ((size_t)(end - start) >= sizeof(elem)) return 1;
-    memcpy(elem, start, (size_t)(end - start));
-    elem[end - start] = '\0';
+    if (strncmp(type_name, "ptr<", 4) == 0) {
+        start = type_name + 4;
+        end = strchr(start, '>');
+        if (!end || end <= start) return 1;
+        if ((size_t)(end - start) >= sizeof(elem)) return 1;
+        memcpy(elem, start, (size_t)(end - start));
+        elem[end - start] = '\0';
+    } else if (strncmp(type_name, "[*]", 3) == 0) {
+        start = type_name + 3;
+        if (!*start) return 1;
+        if (strlen(start) >= sizeof(elem)) return 1;
+        strcpy(elem, start);
+    } else if (type_name[0] == '*') {
+        start = type_name + 1;
+        if (!*start) return 1;
+        if (strlen(start) >= sizeof(elem)) return 1;
+        strcpy(elem, start);
+    } else {
+        return 1;
+    }
     return mc_type_size_from_name(ctx, elem);
 }
 
@@ -2858,6 +2905,7 @@ static uint32_t mc_access_index_elem_size(McCtx *ctx, ASTNode *access) {
     }
     if (obj->type == AST_IDENT) {
         McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
+        if (!sym) sym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, obj->data.ident.name);
         if (sym) {
             uint32_t elem_size = mc_ptr_elem_size_from_type(ctx, sym->type_name);
             return elem_size ? elem_size : 1;
@@ -2884,6 +2932,7 @@ static int mc_emit_indexed_address(McCtx *ctx, ASTNode *access) {
     if (!obj) return -1;
     if (obj->type == AST_IDENT && obj->data.ident.name) {
         sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
+        if (!sym) sym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, obj->data.ident.name);
         if (!sym) return -1;
         if (mc_symbol_type_is_ptr_like(sym)) {
             if (mc_symbol_pointer_base_to_rax(ctx, sym) != 0) return -1;
@@ -3716,7 +3765,14 @@ static const ExeHostCallSpec g_exe_host_aliases[] = {
     { "win/SetTimer", "user32.dll", "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 4, 4, 0, 1, 0 },
     { "win/KillTimer", "user32.dll", "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 2, 2, 0, 1, 0 },
     { "win/SetWindowTextA", "user32.dll", "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 2, 2, 0, 1, 0 },
-    { "win/MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 4, 4, 0, 1, 0 }
+    { "win/MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 4, 4, 0, 1, 0 },
+    { "win/RegisterHotKey", "user32.dll", "RegisterHotKey", EXE_HOST_IAT_MARK_REGISTERHOTKEY, 4, 4, 0, 1, 0 },
+    { "win/UnregisterHotKey", "user32.dll", "UnregisterHotKey", EXE_HOST_IAT_MARK_UNREGISTERHOTKEY, 2, 2, 0, 1, 0 },
+    { "win/GetCursorPos", "user32.dll", "GetCursorPos", EXE_HOST_IAT_MARK_GETCURSORPOS, 1, 1, 0, 1, 0 },
+    { "win/SetWindowPos", "user32.dll", "SetWindowPos", EXE_HOST_IAT_MARK_SETWINDOWPOS, 7, 7, 0, 1, 0 },
+    { "win/SetForegroundWindow", "user32.dll", "SetForegroundWindow", EXE_HOST_IAT_MARK_SETFOREGROUNDWINDOW, 1, 1, 0, 1, 0 },
+    { "win/BringWindowToTop", "user32.dll", "BringWindowToTop", EXE_HOST_IAT_MARK_BRINGWINDOWTOTOP, 1, 1, 0, 1, 0 },
+    { "win/GetSystemMetrics", "user32.dll", "GetSystemMetrics", EXE_HOST_IAT_MARK_GETSYSTEMMETRICS, 1, 1, 0, 1, 0 }
 };
 
 static const ExeHostCallSpec g_exe_direct_imports[] = {
@@ -3767,7 +3823,14 @@ static const ExeHostCallSpec g_exe_direct_imports[] = {
     { "SetTimer", "user32.dll", "SetTimer", EXE_HOST_IAT_MARK_SETTIMER, 0, 16, 0, 1, 0 },
     { "KillTimer", "user32.dll", "KillTimer", EXE_HOST_IAT_MARK_KILLTIMER, 0, 16, 0, 1, 0 },
     { "SetWindowTextA", "user32.dll", "SetWindowTextA", EXE_HOST_IAT_MARK_SETWINDOWTEXTA, 0, 16, 0, 1, 0 },
-    { "MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 0, 16, 0, 1, 0 }
+    { "MessageBoxA", "user32.dll", "MessageBoxA", EXE_HOST_IAT_MARK_MESSAGEBOXA, 0, 16, 0, 1, 0 },
+    { "RegisterHotKey", "user32.dll", "RegisterHotKey", EXE_HOST_IAT_MARK_REGISTERHOTKEY, 0, 16, 0, 1, 0 },
+    { "UnregisterHotKey", "user32.dll", "UnregisterHotKey", EXE_HOST_IAT_MARK_UNREGISTERHOTKEY, 0, 16, 0, 1, 0 },
+    { "GetCursorPos", "user32.dll", "GetCursorPos", EXE_HOST_IAT_MARK_GETCURSORPOS, 0, 16, 0, 1, 0 },
+    { "SetWindowPos", "user32.dll", "SetWindowPos", EXE_HOST_IAT_MARK_SETWINDOWPOS, 0, 16, 0, 1, 0 },
+    { "SetForegroundWindow", "user32.dll", "SetForegroundWindow", EXE_HOST_IAT_MARK_SETFOREGROUNDWINDOW, 0, 16, 0, 1, 0 },
+    { "BringWindowToTop", "user32.dll", "BringWindowToTop", EXE_HOST_IAT_MARK_BRINGWINDOWTOTOP, 0, 16, 0, 1, 0 },
+    { "GetSystemMetrics", "user32.dll", "GetSystemMetrics", EXE_HOST_IAT_MARK_GETSYSTEMMETRICS, 0, 16, 0, 1, 0 }
 };
 
 static int mc_ast_literal_is_string(const ASTNode *expr) {
@@ -4629,6 +4692,33 @@ static int mc_emit_embed_blob_and_lea_reg(McCtx *ctx, const uint8_t *blob, size_
         return 0;
     }
     return mc_emit_u32(&ctx->code, 0);
+}
+
+static int mc_record_truth_addr_fixup(McCtx *ctx, size_t truth_off, int dst_reg_low3) {
+    uint8_t modrm;
+    if (!ctx || dst_reg_low3 < 0 || dst_reg_low3 > 7) return -1;
+    if (mc_is_aarch64(ctx)) {
+        if (mc_emit_a64_insn(&ctx->code, a64_insn_adr(dst_reg_low3, 0)) != 0) return -1;
+    } else {
+        modrm = (uint8_t)(0x05 | ((dst_reg_low3 & 0x7) << 3));
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8D) != 0 || mc_emit_u8(&ctx->code, modrm) != 0) return -1;
+    }
+    if (ctx->truth_fixup_count >= ctx->truth_fixup_cap) {
+        ctx->truth_fixup_cap = ctx->truth_fixup_cap == 0 ? 32 : ctx->truth_fixup_cap * 2;
+        McTruthFixup *grown = (McTruthFixup *)realloc(ctx->truth_fixups, ctx->truth_fixup_cap * sizeof(McTruthFixup));
+        if (!grown) return -1;
+        ctx->truth_fixups = grown;
+    }
+    ctx->truth_fixups[ctx->truth_fixup_count].code_off = mc_is_aarch64(ctx) ? (ctx->code.size - 4) : ctx->code.size;
+    ctx->truth_fixups[ctx->truth_fixup_count].truth_off = truth_off;
+    ctx->truth_fixup_count++;
+    if (mc_is_aarch64(ctx)) return 0;
+    return mc_emit_u32(&ctx->code, 0);
+}
+
+static int mc_emit_global_addr(McCtx *ctx, const McSymbol *sym, int dst_reg_low3) {
+    if (!ctx || !sym || sym->kind != MC_SYM_GLOBAL) return -1;
+    return mc_record_truth_addr_fixup(ctx, (size_t)sym->const_value, dst_reg_low3);
 }
 
 static int mc_emit_print_buffer(McCtx *ctx, McPrintMode mode, const uint8_t *buf, size_t len) {
@@ -5889,6 +5979,14 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                 return mc_emit_mov_acc_imm(ctx, (int64_t)sym->const_value);
             }
 
+            sym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, name);
+            if (sym && sym->kind == MC_SYM_GLOBAL) {
+                uint32_t width = mc_type_size_from_name(ctx, sym->type_name);
+                if (width == 0 || width > 8) width = 8;
+                if (mc_emit_global_addr(ctx, sym, 0) != 0) return -1;
+                return mc_emit_load_acc_from_rax_disp(ctx, 0, width);
+            }
+
             reg_id = mc_reg_id_from_name(name);
             if (reg_id >= 0) {
                 return mc_emit_mov_acc_from_reg_id(ctx, reg_id);
@@ -6106,6 +6204,23 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                     if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1; /* movzx eax, al */
                     if (mc_emit_u8(&ctx->code, 0xB6) != 0) return -1;
                     if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+                    return 0;
+                }
+                if (member && strstr(member, "write") != NULL && port_sym && port_sym->kind == MC_SYM_CONST) {
+                    uint64_t port = port_sym->const_value;
+                    if (expr->data.call.arg_count < 1 || !expr->data.call.args || !expr->data.call.args[0]) {
+                        return -1;
+                    }
+                    if (mc_emit_expr(ctx, expr->data.call.args[0]) != 0) return -1; /* value -> RAX/AL */
+                    if (port <= 0xFF) {
+                        if (mc_emit_u8(&ctx->code, 0xE6) != 0) return -1; /* out imm8, al */
+                        if (mc_emit_u8(&ctx->code, (uint8_t)port) != 0) return -1;
+                    } else {
+                        if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* mov dx, imm16 */
+                        if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1;
+                        if (mc_emit_u16(&ctx->code, (uint16_t)port) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0xEE) != 0) return -1; /* out dx, al */
+                    }
                     return 0;
                 }
 
@@ -6406,6 +6521,17 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
             return 0;
         }
         case AST_ACCESS: {
+            char access_global_path[256];
+            if (mc_build_access_path(expr, access_global_path, sizeof(access_global_path)) == 0) {
+                McSymbol *gsym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, access_global_path);
+                if (gsym && gsym->kind == MC_SYM_GLOBAL) {
+                    uint32_t width = mc_type_size_from_name(ctx, gsym->type_name);
+                    if (width == 0 || width > 8) width = 8;
+                    if (mc_emit_global_addr(ctx, gsym, 0) != 0) return -1;
+                    return mc_emit_load_acc_from_rax_disp(ctx, 0, width);
+                }
+            }
+
             /* 硬件路径访问：CPU/Current\Control\CR0 级控制寄存器访问
                或其他硬件路径如 CPU/Flags\Value 等*/
             if (expr->data.access.member &&
@@ -6806,6 +6932,19 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
             }
 
             if (stmt->data.assignment.left && stmt->data.assignment.left->type == AST_ACCESS) {
+                char access_global_path[256];
+                if (mc_build_access_path(stmt->data.assignment.left, access_global_path, sizeof(access_global_path)) == 0) {
+                    McSymbol *gsym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, access_global_path);
+                    if (gsym && gsym->kind == MC_SYM_GLOBAL) {
+                        uint32_t width = mc_type_size_from_name(ctx, gsym->type_name);
+                        if (width == 0 || width > 8) width = 8;
+                        if (!right_emitted && stmt->data.assignment.right && mc_emit_expr(ctx, stmt->data.assignment.right) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1;
+                        if (mc_emit_global_addr(ctx, gsym, 0) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1;
+                        return mc_emit_store_rcx_to_rax_disp(ctx, 0, width);
+                    }
+                }
                 if (stmt->data.assignment.left->data.access.member &&
                     strcmp(stmt->data.assignment.left->data.access.member, "[index]") == 0 &&
                     stmt->data.assignment.left->data.access.index_expr) {
@@ -6859,14 +6998,24 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
                         }
                     }
 
-                    sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, left_name);
-                    if (sym) {
-                        if (sym->kind == MC_SYM_STACK) return mc_emit_store_acc_to_stack(ctx, sym->stack_offset);
-                        if (sym->kind == MC_SYM_REG_ALIAS) return mc_emit_mov_reg_id_from_acc(ctx, sym->reg_id);
-                        if (sym->kind == MC_SYM_VEC_ALIAS) return 0;
-                    }
+	                    sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, left_name);
+	                    if (sym) {
+	                        if (sym->kind == MC_SYM_STACK) return mc_emit_store_acc_to_stack(ctx, sym->stack_offset);
+	                        if (sym->kind == MC_SYM_REG_ALIAS) return mc_emit_mov_reg_id_from_acc(ctx, sym->reg_id);
+	                        if (sym->kind == MC_SYM_VEC_ALIAS) return 0;
+	                    }
 
-                    reg_id = mc_reg_id_from_name(left_name);
+	                    sym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, left_name);
+	                    if (sym && sym->kind == MC_SYM_GLOBAL) {
+	                        uint32_t width = mc_type_size_from_name(ctx, sym->type_name);
+	                        if (width == 0 || width > 8) width = 8;
+	                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; /* save RHS */
+	                        if (mc_emit_global_addr(ctx, sym, 0) != 0) return -1;
+	                        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; /* RHS -> RCX */
+	                        return mc_emit_store_rcx_to_rax_disp(ctx, 0, width);
+	                    }
+
+	                    reg_id = mc_reg_id_from_name(left_name);
                     if (reg_id >= 0) return mc_emit_mov_reg_id_from_acc(ctx, reg_id);
 
                     if (mc_parse_reg_pseudo(left_name, reg_name, sizeof(reg_name)) == 0) {
@@ -7842,6 +7991,9 @@ static void mc_ctx_free(McCtx *ctx) {
     for (i = 0; i < ctx->const_symbol_count; i++) free(ctx->const_symbols[i].name);
     for (i = 0; i < ctx->const_symbol_count; i++) free(ctx->const_symbols[i].type_name);
     free(ctx->const_symbols);
+    for (i = 0; i < ctx->global_symbol_count; i++) free(ctx->global_symbols[i].name);
+    for (i = 0; i < ctx->global_symbol_count; i++) free(ctx->global_symbols[i].type_name);
+    free(ctx->global_symbols);
     for (i = 0; i < ctx->struct_count; i++) {
         size_t j;
         free(ctx->structs[i].name);
@@ -7928,17 +8080,28 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags);
 
 static void trace_mark_function_reachable(ASTNode *prog, const char *callee, int *reachable_flags) {
     int i;
+    int fallback_idx = -1;
     if (!prog || !callee || !reachable_flags) return;
     for (i = 0; i < prog->data.program.decl_count; i++) {
         ASTNode *decl = prog->data.program.declarations[i];
         if (!decl || decl->type != AST_FUNC_DECL || !decl->data.func_decl.name) continue;
         if (strcmp(decl->data.func_decl.name, callee) == 0) {
-            if (!reachable_flags[i]) {
-                reachable_flags[i] = 1;
-                trace_calls(prog, decl->data.func_decl.body, reachable_flags);
+            if (!decl->data.func_decl.is_extern) {
+                if (!reachable_flags[i]) {
+                    reachable_flags[i] = 1;
+                    trace_calls(prog, decl->data.func_decl.body, reachable_flags);
+                }
+                return;
             }
-            break;
+            if (fallback_idx < 0) {
+                fallback_idx = i;
+            }
         }
+    }
+
+    if (fallback_idx >= 0 && !reachable_flags[fallback_idx]) {
+        reachable_flags[fallback_idx] = 1;
+        trace_calls(prog, prog->data.program.declarations[fallback_idx]->data.func_decl.body, reachable_flags);
     }
 }
 
@@ -8016,6 +8179,16 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
         case AST_UNARY_OP:
             trace_calls(prog, node->data.unary_op.operand, reachable_flags);
             break;
+            
+        /* ====== 新增：处理函数指针/标识符的引用 ====== */
+        case AST_IDENT:
+            if (node->data.ident.name) {
+                /* 保守的 DCE 策略：如果一个变量标识符的名称刚好匹配了某个函数名
+                 * (例如被 as u64 强转作为中断回调)，则将其标记为可达 */
+                trace_mark_function_reachable(prog, node->data.ident.name, reachable_flags);
+            }
+            break;
+        /* ========================================= */
         case AST_CALL: {
             if (node->data.call.func && node->data.call.func->type == AST_IDENT && node->data.call.func->data.ident.name) {
                 const char *callee = node->data.call.func->data.ident.name;
@@ -8181,10 +8354,10 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         }
     }
 
-    for (i = 0; i < ast->data.program.decl_count; i++) {
-        ASTNode *decl = ast->data.program.declarations[i];
-        uint64_t const_value = 0;
-        ASTNode *const_init = NULL;
+	    for (i = 0; i < ast->data.program.decl_count; i++) {
+	        ASTNode *decl = ast->data.program.declarations[i];
+	        uint64_t const_value = 0;
+	        ASTNode *const_init = NULL;
         if (!decl || decl->type != AST_VAR_DECL || !decl->data.var_decl.name) continue;
         const_init = decl->data.var_decl.init ? decl->data.var_decl.init : decl->data.var_decl.init_value;
         if (!const_init) continue;
@@ -8197,10 +8370,48 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
                     return 1;
                 }
             }
-        }
-    }
+	        }
+	    }
 
-        int found_entry = 0;
+	    for (i = 0; i < ast->data.program.decl_count; i++) {
+	        ASTNode *decl = ast->data.program.declarations[i];
+	        const char *type_name = NULL;
+	        uint32_t storage_size;
+	        size_t truth_off;
+	        uint64_t init_value = 0;
+	        uint8_t zero = 0;
+	        if (!decl || decl->type != AST_VAR_DECL || !decl->data.var_decl.name) continue;
+	        if (mc_find_symbol(mc.global_symbols, mc.global_symbol_count, decl->data.var_decl.name)) continue;
+	        if (decl->data.var_decl.type && decl->data.var_decl.type->type == AST_TYPE) {
+	            type_name = decl->data.var_decl.type->data.type.name;
+	        }
+	        storage_size = mc_local_slot_size(&mc, type_name);
+	        if (storage_size == 0) storage_size = 8;
+	        truth_off = mc.truth.size;
+	        if (mc_reserve(&mc.truth, storage_size) != 0) {
+	            strcpy(gen->error, "Failed to allocate global storage");
+	            mc_ctx_free(&mc);
+	            aetb_gen_destroy(aetb);
+	            return 1;
+	        }
+	        memset(mc.truth.data + mc.truth.size, 0, storage_size);
+	        if (decl->data.var_decl.init &&
+	            mc_eval_const_expr(&mc, decl->data.var_decl.init, &init_value) == 0 &&
+	            storage_size <= 8) {
+	            memcpy(mc.truth.data + mc.truth.size, &init_value, storage_size);
+	        } else if (storage_size == 0) {
+	            memcpy(mc.truth.data + mc.truth.size, &zero, 1);
+	        }
+	        mc.truth.size += storage_size;
+	        if (mc_add_global_symbol(&mc, decl->data.var_decl.name, type_name, (uint64_t)truth_off) != 0) {
+	            strcpy(gen->error, "Failed to register global symbol");
+	            mc_ctx_free(&mc);
+	            aetb_gen_destroy(aetb);
+	            return 1;
+	        }
+	    }
+
+	        int found_entry = 0;
     int entry_idx = -1;
     if (gen->target_format == FORMAT_ROM &&
         (gen->entry_point_name == NULL || strlen(gen->entry_point_name) == 0)) {
@@ -8238,12 +8449,37 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         aetb_gen_destroy(aetb);
         return 1;
     }
+    
+    if (gen->target_format == FORMAT_EXE && !found_entry) {
+        strcpy(gen->error, "EXE target requires an explicit @entry function or --entry");
+        mc_ctx_free(&mc);
+        aetb_gen_destroy(aetb);
+        free(reachable_flags);
+        return 1;
+    }
 
-    if (found_entry && entry_idx >= 0) {
-        reachable_flags[entry_idx] = 1;
-        trace_calls(ast, ast->data.program.declarations[entry_idx]->data.func_decl.body, reachable_flags);
+    if (gen->target_format == FORMAT_EXE) {
+        /* EXE 格式：启用严格的死代码消除 (DCE) 以精简应用体积 */
+        if (found_entry && entry_idx >= 0) {
+            reachable_flags[entry_idx] = 1;
+            trace_calls(ast, ast->data.program.declarations[entry_idx]->data.func_decl.body, reachable_flags);
+        }
+        
+        /* 保留所有硬件门函数 (@gate) 防止被误删 */
+        for (i = 0; i < ast->data.program.decl_count; i++) {
+            ASTNode *decl = ast->data.program.declarations[i];
+            if (decl && decl->type == AST_FUNC_DECL && get_gate_type(decl) != NULL) {
+                if (!reachable_flags[i]) {
+                    reachable_flags[i] = 1;
+                    trace_calls(ast, decl->data.func_decl.body, reachable_flags);
+                }
+            }
+        }
     } else {
-        /* 如果没有 @entry，默认从上到下全编译 */
+        /* 核心修复：内核镜像 (AKI) 或 ROM 格式
+         * 内嵌的 AE 编译器、PMM、VMM、IPC 调度器等是以共享模块形态存在，
+         * 不一定由 entry 直接静态调用，绝不能做全局 DCE。
+         * 强制保留所有符号，拒绝裁剪！ */
         for (i = 0; i < ast->data.program.decl_count; i++) {
             reachable_flags[i] = 1;
         }
