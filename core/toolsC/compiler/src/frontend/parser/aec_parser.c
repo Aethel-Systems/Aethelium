@@ -262,7 +262,7 @@ static char *parse_slash_identifier(Parser *parser) {
     if (!check(parser, TK_IDENT) && !check(parser, TK_PTR) &&
         !check(parser, TK_VIEW) && !check(parser, TK_REG) &&
         !check(parser, TK_METAL) && !check(parser, TK_ASM) &&
-        !check(parser, TK_BYTES)) {
+        !check(parser, TK_BYTES) && !check(parser, TK_SYS)) {
         return NULL;
     }
 
@@ -281,7 +281,7 @@ static char *parse_slash_identifier(Parser *parser) {
         if (!check(parser, TK_IDENT) && !check(parser, TK_PTR) &&
             !check(parser, TK_VIEW) && !check(parser, TK_REG) &&
             !check(parser, TK_METAL) && !check(parser, TK_ASM) &&
-            !check(parser, TK_BYTES)) {
+            !check(parser, TK_BYTES) && !check(parser, TK_SYS)) {
             error(parser, "Expected identifier segment after '/'");
             return NULL;
         }
@@ -1675,8 +1675,8 @@ static ASTNode* parse_primary(Parser *parser) {
         }
     }
     
-    /* 标识符或关键字作为标识符 (ptr/view/reg 等可用作变量名或泛型前缀) */
-    if (tok.type == TK_IDENT || tok.type == TK_PTR || tok.type == TK_VIEW || tok.type == TK_REG) {
+    /* 标识符或关键字作为标识符 (ptr/view/reg/sys 等可用作变量名或泛型前缀) */
+    if (tok.type == TK_IDENT || tok.type == TK_PTR || tok.type == TK_VIEW || tok.type == TK_REG || tok.type == TK_SYS) {
         char *full_name = parse_slash_identifier(parser);
         if (!full_name) {
             error(parser, "Expected identifier");
@@ -4984,6 +4984,59 @@ static ASTNode* parse_statement(Parser *parser) {
         }
 
         parser->pos = win_saved_pos;
+    }
+    
+    /* Windows 宿主内核原语块 - sys { ... } */
+    if (check(parser, TK_SYS)) {
+        int sys_saved_pos = parser->pos;
+        advance(parser);  /* consume sys */
+
+        if (check(parser, TK_LBRACE)) {
+            ASTNode *node = ast_create_node(AST_SYS_BLOCK);
+            int sys_stmt_cap = 64;
+            node->data.sys_block.statements = (ASTNode **)safe_malloc(sizeof(ASTNode *) * (size_t)sys_stmt_cap);
+            node->data.sys_block.stmt_count = 0;
+
+            if (!match(parser, TK_LBRACE)) {
+                error(parser, "Expected '{' after 'sys'");
+                return node;
+            }
+
+            while (!check(parser, TK_RBRACE) && !check(parser, TK_EOF)) {
+                ASTNode *stmt;
+                int pos_before;
+
+                while (match(parser, TK_NEWLINE));
+                if (check(parser, TK_RBRACE)) break;
+
+                pos_before = parser->pos;
+                stmt = parse_statement(parser);
+                if (stmt) {
+                    if (node->data.sys_block.stmt_count >= sys_stmt_cap) {
+                        sys_stmt_cap *= 2;
+                        node->data.sys_block.statements = (ASTNode **)safe_realloc(
+                            node->data.sys_block.statements,
+                            sizeof(ASTNode *) * (size_t)sys_stmt_cap
+                        );
+                    }
+                    node->data.sys_block.statements[node->data.sys_block.stmt_count++] = stmt;
+                } else if (parser->pos == pos_before) {
+                    Token t = current_token(parser);
+                    if (t.type != TK_RBRACE && t.type != TK_EOF) {
+                        advance(parser);
+                    }
+                }
+
+                while (match(parser, TK_NEWLINE) || match(parser, TK_SEMICOLON));
+            }
+
+            if (!match(parser, TK_RBRACE)) {
+                error(parser, "Expected '}' after sys block");
+            }
+            return node;
+        }
+
+        parser->pos = sys_saved_pos;
     }
     
     /* 硬件层块 - hardware { ... } 硬件层代码 */

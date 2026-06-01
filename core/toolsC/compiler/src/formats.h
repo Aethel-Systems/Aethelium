@@ -37,6 +37,7 @@
 #include "pe_industrial.h"
 #include "rom.h"
 #include "exe_binary_weaver.h"
+#include "wsys.h"
 
 /**
  * 编译器支持的输出格式枚举
@@ -51,7 +52,8 @@ typedef enum {
     FORMAT_BIN,         /* Flat machine code binary */
     FORMAT_EFI,         /* UEFI PE32+ 嵌入式AETB (Embedded AETB bootloader) */
     FORMAT_PE,          /* UEFI PE32+ 工业级应用 (Industrial Grade PE Application) */
-    FORMAT_ROM          /* Full ROM firmware image (flashable) */
+    FORMAT_ROM,          /* Full ROM firmware image (flashable) */
+    FORMAT_WSYS         /* Windows Kernel Driver (.sys) */
 } format_type_t;
 
 /**

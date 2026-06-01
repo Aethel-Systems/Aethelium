@@ -142,6 +142,8 @@ static const Keyword keywords[] = {
     { "silicon", TK_SILICON },
     { "pipeline", TK_PIPELINE },
     { "phys", TK_PHYS },
+    { "extern", TK_EXTERN }, /* 新增：支持 extern 关键字 */
+    { "sys", TK_SYS },       /* 新增：Windows 宿主内核原语块 */
     { NULL, 0 }
 };
 

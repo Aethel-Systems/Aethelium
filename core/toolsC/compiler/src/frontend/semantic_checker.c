@@ -514,6 +514,11 @@ static void analyze_node(const ASTNode *node, SemanticContext *ctx) {
             ctx->result->requires_architect_mode = 1;
             analyze_list(node->data.win_block.statements, node->data.win_block.stmt_count, ctx);
             break;
+
+        case AST_SYS_BLOCK:
+            ctx->result->requires_architect_mode = 1;
+            analyze_list(node->data.sys_block.statements, node->data.sys_block.stmt_count, ctx);
+            break;
         
         /* ==================== 硅基语义节点 ==================== */
         case AST_SILICON_BLOCK:

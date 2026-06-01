@@ -98,6 +98,7 @@
 #define FORMAT_MACHO 9       /* 裸机 Mach-O 固件镜像 (Apple Silicon) */
 #define FORMAT_IM4P 10       /* Image4 Payload 容器 (iBoot + Apple Silicon) */
 #define FORMAT_EXE  11       /* Windows PE32+ Console Executable (独立完整实现) */
+#define FORMAT_WSYS 12       /* Windows Kernel Driver (.sys) 格式 */
 
 #define EXE_PORTAL_IAT_MARK_NTWRITEFILE               0x11F1E1A1U
 #define EXE_PORTAL_IAT_MARK_NTTERMINATEPROCESS        0x22F2E2A2U
@@ -946,7 +947,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  Dump:    %s /dump-reloc-dna:<input.let> [/o:<output.txt>]\n", prog);
     fprintf(stderr, "  ISO:     %s /iso /o:<output.iso> /kernel:<kernel> /efi:<boot.efi> [/size:<MB>]\n", prog);
     fprintf(stderr, "\nOutput Formats:\n");
-    fprintf(stderr, "  /emit:<aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p>\n");
+    fprintf(stderr, "  /emit:<aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p|wsys>\n");
     fprintf(stderr, "\nBare-metal Mach-O (Apple Silicon) Options:\n");
     fprintf(stderr, "  /emit:macho         Generate bare-metal Mach-O firmware image\n");
     fprintf(stderr, "  /base:<address>     Physical load address (default: 0x800000000)\n");
@@ -994,7 +995,7 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  Dump:    %s --dump-reloc-dna <input.let> [-o <output.txt>]\n", prog);
     fprintf(stderr, "  ISO:     %s --iso -o <output.iso> --kernel <kernel> --efi <boot.efi> [--size <MB>]\n", prog);
     fprintf(stderr, "\nOutput Formats:\n");
-    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p\n");
+    fprintf(stderr, "  --emit aetb|let|aki|srv|hda|efi|pe|exe|bin|rom|macho|im4p|wsys\n");
     fprintf(stderr, "\nBare-metal Mach-O (Apple Silicon) Options:\n");
     fprintf(stderr, "  --emit macho         Generate bare-metal Mach-O firmware image\n");
     fprintf(stderr, "  --base <address>     Physical load address (default: 0x800000000)\n");
@@ -1145,7 +1146,7 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
                 strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
                 strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
-                strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0) {
+                strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0 || strcmp(fmt, "wsys") == 0) {
                 opts->output_format = fmt;
                 opts->emit_format = fmt;
             } else {
@@ -1284,7 +1285,7 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
                 if (strcmp(fmt, "aetb") == 0 || strcmp(fmt, "let") == 0 || strcmp(fmt, "aki") == 0 ||
                     strcmp(fmt, "efi") == 0 || strcmp(fmt, "uefi_app") == 0 || strcmp(fmt, "pe") == 0 ||
                     strcmp(fmt, "hda") == 0 || strcmp(fmt, "srv") == 0 || strcmp(fmt, "bin") == 0 ||
-                    strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0) {
+                    strcmp(fmt, "rom") == 0 || strcmp(fmt, "macho") == 0 || strcmp(fmt, "im4p") == 0 || strcmp(fmt, "exe") == 0 || strcmp(fmt, "wsys") == 0) {
                     opts->output_format = fmt;
                     opts->emit_format = fmt;
                 } else {
@@ -1903,6 +1904,7 @@ static int run_compiler(CompilerOptions *opts) {
         else if (strcmp(opts->emit_format, "rom") == 0) target_format = FORMAT_ROM;
         else if (strcmp(opts->emit_format, "macho") == 0) target_format = FORMAT_MACHO;
         else if (strcmp(opts->emit_format, "im4p") == 0) target_format = FORMAT_IM4P;
+        else if (strcmp(opts->emit_format, "wsys") == 0) target_format = FORMAT_WSYS;
         else target_format = FORMAT_AETB;
     } else if (strstr(output_file, ".aki") != NULL) {
         target_format = FORMAT_AKI;
@@ -1924,6 +1926,8 @@ static int run_compiler(CompilerOptions *opts) {
         target_format = FORMAT_MACHO;
     } else if (strstr(output_file, ".im4p") != NULL) {
         target_format = FORMAT_IM4P;
+    } else if (strstr(output_file, ".sys") != NULL || strstr(output_file, ".SYS") != NULL) {
+        target_format = FORMAT_WSYS;
     }
     
     if (opts->verbose) {
@@ -1940,6 +1944,7 @@ static int run_compiler(CompilerOptions *opts) {
             case FORMAT_ROM: fmt_name = "ROM (Flash Image)"; break;
             case FORMAT_MACHO: fmt_name = "Mach-O (Bare-metal Apple Silicon)"; break;
             case FORMAT_IM4P: fmt_name = "IM4P (Image4 Payload for iBoot)"; break;
+            case FORMAT_WSYS: fmt_name = "WSYS (Windows Kernel Driver)"; break;
         }
         printf("[INFO] 目标格式: %s\n", fmt_name);
     }
@@ -1947,6 +1952,7 @@ static int run_compiler(CompilerOptions *opts) {
     if ((target_format == FORMAT_EFI ||
          target_format == FORMAT_PE ||
          target_format == FORMAT_EXE ||
+         target_format == FORMAT_WSYS ||
          target_format == FORMAT_AKI ||
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
@@ -1962,6 +1968,7 @@ static int run_compiler(CompilerOptions *opts) {
     }
     if ((target_format == FORMAT_EFI ||
          target_format == FORMAT_PE ||
+         target_format == FORMAT_WSYS ||
          target_format == FORMAT_AKI ||
          target_format == FORMAT_HDA ||
          target_format == FORMAT_SRV ||
@@ -2328,8 +2335,8 @@ static int run_compiler(CompilerOptions *opts) {
     }
     
     /* 对于PE格式，计算entry_point_offset */
-    /* 定位到 gen_expression 的循环之后，修改 entry_point_offset 的逻辑 */
-    if (target_format == FORMAT_PE || target_format == FORMAT_EXE) {
+    /* 定位到 gen_expression 的循环之后，修改 entry_point_offset 的 logic */
+    if (target_format == FORMAT_PE || target_format == FORMAT_EXE || target_format == FORMAT_WSYS) {
         if (binary_size >= sizeof(AethelBinaryHeader)) {
             const AethelBinaryHeader *hdr = (const AethelBinaryHeader *)binary_data;
             /* 
@@ -2600,6 +2607,23 @@ static int run_compiler(CompilerOptions *opts) {
         if (opts->verbose) {
             printf("[INFO] EXE 二进制文件生成成功\n");
         }
+    }
+    else if (target_format == FORMAT_WSYS) {
+        if (opts->verbose) {
+            printf("[INFO] 使用工业级后端生成 Windows 内核驱动: %s\n", output_file);
+        }
+        WSYS_Input wsys_input = {
+            .output_filename = output_file,
+            .code_section = code,
+            .code_size = code_size,
+            .data_section = mirror_data,
+            .data_size = mirror_size,
+            .rodata_section = constant_data,
+            .rodata_size = constant_size,
+            .entry_point_offset = entry_offset,
+            .machine_type = (opts->machine_bits == 64 && strcmp(opts->isa, "aarch64") == 0) ? WSYS_MACHINE_ARM64 : WSYS_MACHINE_AMD64
+        };
+        format_result = wsys_generate_image(&wsys_input);
     }
     else if (target_format == FORMAT_MACHO) {
         if (opts->verbose) {

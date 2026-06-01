@@ -141,7 +141,7 @@ subprocess.Popen("notepad.exe")
 */
 ```
 
-![UEFIDemo](https://github.com/Aethel-Systems/AetheliumDemo/UEFI/AERescue/assets/screenshot.png)
+![UEFIDemo](https://github.com/Aethel-Systems/AetheliumDemo/blob/main/UEFI/AERescue/assets/screenshot.png)
 
 ---
 

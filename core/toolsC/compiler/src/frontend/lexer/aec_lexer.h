@@ -62,6 +62,7 @@ typedef enum {
     TK_CONTINUE = 42,
     TK_SELF = 43,
     TK_EXTERN = 44,    /* 新增 */
+    TK_SYS = 159,      /* 新增：sys 关键字 */
     TK_CONST = 150,    /* 新增：const 关键字 */
     TK_USE = 151,      /* 新增：use 关键字 */
     

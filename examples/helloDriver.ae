@@ -1,0 +1,70 @@
+// ============================================================================
+// Aethelium Windows Kernel Driver Example - HelloDriver.ae
+// 工业级无 C 依赖、零运行时、直接映射 Windows 内核数据结构
+// 完美绕过旧版本编译器 [Size]Keyword 语法限制的安全包装版
+// ============================================================================
+
+// 1. 声明一个包装结构体
+@packed
+struct FuncPtr {
+    value: ptr<Void>
+}
+
+// 2. 严格对应 Windows DDK 规范的内核数据结构
+
+@packed
+struct UNICODE/STRING {
+    length: UInt16
+    maximum/length: UInt16
+    pad: UInt32                    // 4字节显式对齐填充，确保指针指向 8 字节边界
+    buffer: ptr<UInt16>
+}
+
+@packed
+struct DRIVER/OBJECT {
+    type: UInt16
+    size: UInt16
+    pad0: UInt32                   // 4字节填充
+    device/object: ptr<Void>
+    flags: UInt32
+    pad1: UInt32                   // 4字节填充
+    driver/start: ptr<Void>
+    driver/size: UInt32
+    pad2: UInt32                   // 4字节填充
+    driver/section: ptr<Void>
+    driver/extension: ptr<Void>
+    driver/name: UNICODE/STRING    // 嵌入的 Unicode 字符串，起始于 56 字节处
+    hardware/database: ptr<Void>
+    fast/io/dispatch: ptr<Void>
+    driver/init: ptr<Void>
+    driver/start/io: ptr<Void>
+    driver/unload: ptr<Void>       // 严格对齐至 104 字节 (0x68)
+    major/function: [28]FuncPtr    // 规避 [28]ptr<Void> 的限制，物理大小完全一致
+}
+
+// 3. 驱动卸载回调函数（Driver Unload Routine）
+// 当通过 SCM 卸载驱动时，内核会调用此函数。不设置此函数会导致驱动无法安全卸载，必须重启。
+
+func DriverUnload(driver/object: ptr<DRIVER/OBJECT>): Void {
+    // 使用内置映射的 print，后端会自动转换为调用 ntoskrnl/DbgPrint
+    print("Aethel Kernel: [HelloDriver] DriverUnload invoked. Cleaning up resources...")
+    
+    sys { ntoskrnl/DbgPrint("Aethel Kernel: [HelloDriver] Driver state successfully teared down.\n") }
+}
+
+// 4. 驱动入口点（Driver Entry Point）
+// 必须使用 @entry 修饰，指示编译器为其构建满足微软 x64 规范的 DriverEntry 参数栈帧
+
+@entry
+func DriverEntry(driver/object: ptr<DRIVER/OBJECT>, registry/path: ptr<Void>): UInt64 {
+    // 打印加载成功日志
+    print("Aethel Kernel: [HelloDriver] DriverEntry invoked successfully!")
+    
+    sys { ntoskrnl/DbgPrint("Aethel Kernel: [HelloDriver] Hello from Aethelium Windows Driver!\n") }
+
+    // 绑定卸载回调函数，允许动态卸载
+    // 在 x64 架构下直接向 0x68 偏移处写入函数指针
+    driver/object\driver/unload = DriverUnload as ptr<Void>
+
+    return 0 // STATUS/SUCCESS (STATUS/SUCCESS 默认为 0)
+}
