@@ -93,6 +93,7 @@ static const Keyword keywords[] = {
     { "let", TK_LET },
     { "var", TK_VAR },
     { "const", TK_CONST },  /* 新增 */
+    { "pbit", TK_PBIT },    /* 新增 */
     { "func", TK_FUNC },
     { "fn", TK_FUNC },     /* 新增：支持 fn 关键字 */
     { "extern", TK_EXTERN }, /* 新增：支持 extern 关键字 */
@@ -256,6 +257,23 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
         }
         
         else if (c == '"') {
+            /* Look ahead to see if it's a closed string or standalone quote */
+            int is_standalone = 1;
+            int look_pos = lexer->pos + 1;
+            while (look_pos < lexer->length && lexer->input[look_pos] != '\n') {
+                if (lexer->input[look_pos] == '"') {
+                    is_standalone = 0;
+                    break;
+                }
+                look_pos++;
+            }
+            
+            if (is_standalone) {
+                advance(lexer);
+                add_token(lexer, TK_QUOTE, "\"");
+                continue;
+            }
+            
             advance(lexer);
             int start = lexer->pos;
             
@@ -277,27 +295,35 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
             if (current_char(lexer) == '"') advance(lexer);
         }
         else if (c == '\'') {
-            /* 单引号字符串 'char' */
-            advance(lexer);
-            int start = lexer->pos;
+            int is_char = 0;
+            if (lexer->pos + 2 < lexer->length && lexer->input[lexer->pos + 1] != '\\' && lexer->input[lexer->pos + 2] == '\'') is_char = 1;
+            if (lexer->pos + 3 < lexer->length && lexer->input[lexer->pos + 1] == '\\' && lexer->input[lexer->pos + 3] == '\'') is_char = 1;
             
-            while (current_char(lexer) && current_char(lexer) != '\'') {
-                if (current_char(lexer) == '\\') {
+            if (is_char) {
+                /* 单引号字符串 'char' */
+                advance(lexer);
+                int start = lexer->pos;
+                
+                while (current_char(lexer) && current_char(lexer) != '\'') {
+                    if (current_char(lexer) == '\\') {
+                        advance(lexer);
+                    }
                     advance(lexer);
                 }
-                advance(lexer);
-            }
-            
             int len = lexer->pos - start;
-            char *str = malloc(len + 1);
-            strncpy(str, &lexer->input[start], len);
-            str[len] = '\0';
-            
-            add_token(lexer, TK_STRING, str);
-            free(str);
-            
-            if (current_char(lexer) == '\'') advance(lexer);
-        }
+                char *str = malloc(len + 1);
+                strncpy(str, &lexer->input[start], len);
+                str[len] = '\0';
+                
+                add_token(lexer, TK_STRING, str);
+                free(str);
+                
+                if (current_char(lexer) == '\'') advance(lexer);
+                } else {
+                    advance(lexer);
+                    add_token(lexer, TK_TICK, "'");
+                }
+            }
         else if (isalpha(c) || c == '_') {
             int start = lexer->pos;
             

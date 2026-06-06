@@ -1,0 +1,54 @@
+// ============================================================================
+// Aethelium 块量示例：Windows 敏感内存安全洗消
+// 意义：在处理完加密密钥或密码后，物理覆盖内存以防止冷启动攻击或内存 dump 泄露
+// ============================================================================
+
+@entry
+func start(): UInt64 {
+    // 1. 模拟一个存储在栈上的敏感数据缓冲区（如：解密后的私钥）
+    var secret/buffer: [32]UInt8
+    
+    // 获取物理地址起点
+    let base/addr: UInt64 = cast<UInt64>(&secret/buffer)
+
+    // 2. 声明块量（pbit）形式 B：锁定这 32 字节的内存区间
+    // 这行代码不仅定义了变量，还告诉编译器这个区间的物理界限
+    pbit key/block: [base/addr ' base/addr + 31]
+
+    print("--- Memory Architect Monitor ---")
+    print("Managing sensitive block at: ")
+    print(key/block\start) // 访问元数据：起点地址
+    
+    print("Total entropy span (size): ")
+    print(key/block\size)  // 访问元数据：自动计算大小 (32)
+
+    // 3. 模拟业务操作：对块量进行下标写入
+    // 这里的下标访问 [10] 会经过编译器自动生成的 Bounds Checking 保护
+    // 如果写 key/block[40]，编译器会直接拒绝编译或触发硬件陷阱
+    key/block[0] = 0x41
+    key/block[1] = 0x45
+    key/block[31] = 0x21
+    
+    print("Status: Key processed in protected block.")
+
+    // 4. 原生区间裁剪（Sub-Slicing）
+    // 假设我们要对密钥的前 16 字节（前半部分）进行单独的校验
+    pbit half/key: key/block:[0 ' 15]
+    print("Sub-slice (Half-Key) size: ")
+    print(half/key\size) // 输出 16
+
+    // 5. 核心增强功能：一键物理擦除（Block Wiping）
+    // 业务完成后，必须销毁内存中的敏感痕迹。
+    // 这行代码在 x86-64 下会被编译为高效的 'rep stosb' 指令，
+    // 在 AArch64 下则映射为连续的 DC ZVA 指令，实现纳秒级的物理填充。
+    key/block:[] = 0x00
+
+    print("Security: Block physically purged with zero-fill.")
+    
+    // 再次通过元数据验证（逻辑验证）
+    if key/block[0] == 0 {
+        print("Final check: First byte is clean.")
+    }
+
+    return 0
+}

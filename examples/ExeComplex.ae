@@ -80,24 +80,27 @@ func malloc/like/allocator(size: Int32) : UInt64 {
 }
 
 func Demo/AuraFlux/wndproc(hwnd: UInt64, msg: UInt32, wparam: UInt64, lparam: Int64) : Int64 {
+    // 【核心修正一】拦截擦除背景，禁止 Windows 涂白屏幕！
+    if msg == 0x0014 {
+        return 1
+    }
+
     if msg == Aura/Host/WM/TIMER {
         global/pulse/tick = global/pulse/tick + 1
         if (global/pulse/tick % 60) == 0 {
             win { user32/SetWindowTextA(hwnd, cast<ptr<UInt8>>(cast<UInt64>("Aethel Architect // Flux Pipeline [SYNC: LIVE]"))) }
         }
-        
-        let rect: Win/GDI/Rect
-        win { user32/GetClientRect(hwnd, &rect) }
-        noteFlux/UI/RenderNoRoot(hwnd, global/note/view, rect\right, rect\bottom)
-        
+        win { user32/InvalidateRect(hwnd, 0, 0) }
         return 0
     }
     
     if msg == Aura/Host/WM/PAINT {
-        let rect: Win/GDI/Rect
+        let rect: Flux/GDI/Rect
         win { user32/GetClientRect(hwnd, &rect) }
-        noteFlux/UI/RenderNoRoot(hwnd, global/note/view, rect\right, rect\bottom)
-        win { user32/ValidateRect(hwnd, 0) }
+        
+        let view: ptr<Flux/UI/Node> = cast<ptr<Flux/UI/Node>>(Aura/Host/user32/get/prop(hwnd, cast<UInt64>("ViewRoot")))
+        
+        Flux/UI/RenderNoRoot(hwnd, view, rect\right, rect\bottom)
         return 0
     }
     
@@ -131,10 +134,11 @@ func start() : UInt64 {
     let hwnd: UInt64 = Aura/Host/window/create(0, class/name, window/title, Aura/Host/WS/OVERLAPPED/WINDOW, pos/x, pos/y, width, height, 0, 0, 0)
     if hwnd == 0 { return 11 }
 
+    // 【核心修正】将树节点直接绑定到 HWND 的安全内存区
+    Aura/Host/user32/set/prop(hwnd, cast<UInt64>("ViewRoot"), cast<UInt64>(BuildDeclarativeUI()))
+
     Aura/Host/apply/glass/frame(hwnd)
     Aura/Host/window/show(hwnd)
-
-    global/note/view = BuildDeclarativeUI()
 
     return Aura/Host/run/loop(&msg, hwnd, 1, 16)
 }

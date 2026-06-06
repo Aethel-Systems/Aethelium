@@ -2675,6 +2675,33 @@ static ASTNode* parse_postfix(Parser *parser) {
                 node = access;
             }
         }
+        
+        else if (match(parser, TK_COLON)) {
+            if (match(parser, TK_LBRACKET)) {
+                ASTNode *slice = ast_create_node(AST_PBIT_SLICE);
+                slice->data.pbit_slice.object = node;
+                
+                while (match(parser, TK_NEWLINE));
+                
+                if (check(parser, TK_RBRACKET)) {
+                    slice->data.pbit_slice.is_full_block = 1;
+                    advance(parser);
+                } else {
+                    slice->data.pbit_slice.is_full_block = 0;
+                    slice->data.pbit_slice.start_offset = parse_expression(parser);
+                    if (!match(parser, TK_TICK)) {
+                        error(parser, "Expected ''' in pbit slice");
+                    }
+                    slice->data.pbit_slice.end_offset = parse_expression(parser);
+                    if (!match(parser, TK_RBRACKET)) {
+                        error(parser, "Expected ']' after pbit slice");
+                    }
+                }
+                node = slice;
+            } else {
+                error(parser, "Expected '[' after ':' for pbit slice");
+            }
+        }
         else if (match(parser, TK_LBRACKET)) {
             while (match(parser, TK_NEWLINE));
             ASTNode *index_node = parse_expression(parser);
@@ -4208,6 +4235,71 @@ static ASTNode* parse_block(Parser *parser) {
 }
 
 static ASTNode* parse_statement(Parser *parser) {
+    if (check(parser, TK_PBIT)) {
+        advance(parser);
+        
+        if (!check(parser, TK_IDENT)) {
+            error(parser, "Expected identifier after 'pbit'");
+            return NULL;
+        }
+        
+        char *var_name = parse_slash_identifier(parser);
+        if (!var_name) return NULL;
+        
+        ASTNode *pbit = ast_create_node(AST_PBIT_DECL);
+        
+        int is_form_a = 0;
+        if (match(parser, TK_QUOTE)) {
+            is_form_a = 1;
+        }
+        
+        pbit->data.pbit_decl.name = (char *)parser_intern_string(parser, var_name);
+        free(var_name);
+        
+        if (is_form_a) {
+            pbit->data.pbit_decl.is_block = 1;
+            if (!match(parser, TK_ASSIGN)) {
+                error(parser, "Expected '=' in pbit Form A");
+            }
+            pbit->data.pbit_decl.start_expr = parse_expression(parser);
+            if (!match(parser, TK_TICK)) {
+                error(parser, "Expected ''' in pbit Form A");
+            }
+            pbit->data.pbit_decl.end_expr = parse_expression(parser);
+        } else if (check(parser, TK_COLON)) {
+                /* 工业级改进：检测冒号后是否紧跟 [，区分字面量还是表达式初始化 */
+                advance(parser); // 消耗 :
+                if (check(parser, TK_LBRACKET)) {
+                    /* 形式 B：字面量区间 [start ' end] */
+                    advance(parser); // 消耗 [
+                    pbit->data.pbit_decl.is_block = 1;
+                    pbit->data.pbit_decl.start_expr = parse_expression(parser);
+                    if (!match(parser, TK_TICK)) {
+                        error(parser, "Expected ''' separator in pbit range");
+                    }
+                    pbit->data.pbit_decl.end_expr = parse_expression(parser);
+                    if (!match(parser, TK_RBRACKET)) {
+                        error(parser, "Expected ']' to close pbit range");
+                    }
+                } else {
+                    /* 区间切片初始化：pbit name: object:[start ' end] */
+                    /* 此时冒号后是标识符，将其视为一个完整的表达式解析 */
+                    pbit->data.pbit_decl.is_block = 1;
+                    pbit->data.pbit_decl.start_expr = parse_expression(parser);
+                    pbit->data.pbit_decl.end_expr = NULL; // 终点信息已包含在 start_expr 的 PBIT_SLICE 节点中
+                }
+            } else if (match(parser, TK_ASSIGN)) {
+            pbit->data.pbit_decl.is_block = 0;
+            pbit->data.pbit_decl.start_expr = parse_expression(parser);
+            pbit->data.pbit_decl.end_expr = NULL;
+        } else {
+            error(parser, "Invalid pbit declaration");
+        }
+        
+        if (check(parser, TK_SEMICOLON)) advance(parser);
+        return pbit;
+    }
+
     // Variable Declaration
     if (check(parser, TK_VAR) || check(parser, TK_LET)) {
         int is_let_var = check(parser, TK_LET);

@@ -2951,9 +2951,42 @@ static int mc_emit_indexed_address(McCtx *ctx, ASTNode *access) {
     McSymbol *obj_sym = NULL;
     McStructField *field = NULL;
     uint32_t elem_size;
+    int is_pbit_block = 0;
     if (!ctx || !access || access->type != AST_ACCESS || !access->data.access.index_expr) return -1;
     obj = access->data.access.object;
     if (!obj) return -1;
+
+    if (obj->type == AST_IDENT) {
+        McSymbol *psym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
+        if (psym && psym->type_name && strcmp(psym->type_name, "pbit_block") == 0) {
+            is_pbit_block = 1;
+        }
+    }
+
+    if (is_pbit_block && !mc_is_aarch64(ctx)) {
+        McSymbol *psym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
+        // index is in RAX
+        if (mc_emit_expr(ctx, access->data.access.index_expr) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push rax (index)
+        // Load size
+        if (mc_emit_load_acc_from_stack(ctx, psym->stack_offset + 16) != 0) return -1; // rax = size
+        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (index)
+        // cmp rcx, rax
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x39) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1;
+        // jb +2
+        if (mc_emit_u8(&ctx->code, 0x72) != 0 || mc_emit_u8(&ctx->code, 0x02) != 0) return -1;
+        // ud2
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x0B) != 0) return -1;
+        
+        // RCX is index
+        if (mc_emit_u8(&ctx->code, 0x51) != 0) return -1; // push rcx
+        // Load start
+        if (mc_emit_load_acc_from_stack(ctx, psym->stack_offset) != 0) return -1; // rax = start
+        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (index)
+        // add rax, rcx
+        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1;
+        return 0; // address in RAX
+    }
     if (obj->type == AST_IDENT && obj->data.ident.name) {
         sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, obj->data.ident.name);
         if (!sym) sym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, obj->data.ident.name);
@@ -3711,6 +3744,29 @@ static int mc_plan_locals_in_stmt(McCtx *ctx, ASTNode *stmt) {
     int i;
     if (!ctx || !stmt) return 0;
     switch (stmt->type) {
+        case AST_PBIT_DECL: {
+            const char *name = stmt->data.pbit_decl.name;
+            McSymbol sym;
+            if (!name) return 0;
+            if (mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, name)) return 0;
+            memset(&sym, 0, sizeof(sym));
+            sym.name = (char *)name;
+            sym.kind = MC_SYM_STACK;
+            sym.type_name = stmt->data.pbit_decl.is_block ? (char *)"pbit_block" : (char *)"pbit";
+            
+            uint32_t type_size = stmt->data.pbit_decl.is_block ? 24 : 8;
+            ctx->stack_allocated += type_size;
+            sym.stack_offset = -ctx->stack_allocated;
+            if (mc_add_local_symbol(ctx, &sym) != 0) return -1;
+            
+            if (stmt->data.pbit_decl.start_expr) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.pbit_decl.start_expr) != 0) return -1;
+            }
+            if (stmt->data.pbit_decl.end_expr) {
+                if (mc_plan_locals_in_stmt(ctx, stmt->data.pbit_decl.end_expr) != 0) return -1;
+            }
+            return 0;
+        }
         case AST_VAR_DECL: {
             const char *name = stmt->data.var_decl.name;
             McSymbol sym;
@@ -5611,18 +5667,71 @@ static int mc_emit_print_expr_runtime(McCtx *ctx, McPrintMode mode, ASTNode *exp
     type_name = mc_expr_runtime_type_name(ctx, expr);
     
     if (mc_is_aarch64(ctx)) {
-        if (mc_type_name_is_integer_like(type_name)) {
-            if (type_name && (strstr(type_name, "Addr") != NULL || strstr(type_name, "ptr<") != NULL)) {
-                return mc_emit_print_u64_hex_runtime_a64(ctx, mode, expr);
+        if (type_name && (strstr(type_name, "ptr<") != NULL || strstr(type_name, "[") != NULL)) {
+            if (strstr(type_name, "UInt8") != NULL || strstr(type_name, "Int8") != NULL) {
+                /* 字符串变量处理 (AArch64) */
+                if (mc_emit_expr(ctx, expr) != 0) return -1; /* 结果在 X0 */
+                if (mode == MC_PRINT_MODE_WSYS_DBGPRINT) {
+                    if (mc_emit_a64_insn(&ctx->code, a64_insn_sub_imm(31, 31, 16)) != 0) return -1;
+                    if (mc_emit_a64_insn(&ctx->code, 0x90000009u) != 0) return -1;
+                    if (mc_emit_a64_insn(&ctx->code, 0xF9400129u) != 0) return -1;
+                    if (mc_emit_a64_insn(&ctx->code, 0xD63F0120u) != 0) return -1;
+                    if (mc_emit_a64_insn(&ctx->code, 0x14000003u) != 0) return -1;
+                    if (mc_emit_u32(&ctx->code, WSYS_IAT_MARK_DBGPRINT) != 0) return -1;
+                    if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+                    if (mc_emit_a64_insn(&ctx->code, a64_insn_add_imm(31, 31, 16)) != 0) return -1;
+                    return 0;
+                }
+                return -1;
             }
-            return mc_emit_print_u64_dec_runtime_a64(ctx, mode, expr);
+            return mc_emit_print_u64_hex_runtime_a64(ctx, mode, expr);
         }
-        /* 字符串变量处理 */
-        if (mc_emit_expr(ctx, expr) != 0) return -1; /* 结果在 X0 */
-        return mc_emit_print_buffer(ctx, mode, NULL, 0); /* 触发 X0 传递 */
+        if (type_name && strstr(type_name, "Addr") != NULL) {
+            return mc_emit_print_u64_hex_runtime_a64(ctx, mode, expr);
+        }
+        return mc_emit_print_u64_dec_runtime_a64(ctx, mode, expr);
     }
 
-    type_name = mc_expr_runtime_type_name(ctx, expr);
+    if (type_name && (strstr(type_name, "ptr<") != NULL || strstr(type_name, "[") != NULL)) {
+        if (strstr(type_name, "UInt8") != NULL || strstr(type_name, "Int8") != NULL) {
+            /* 字符串变量处理 (x86-64) */
+            if (mc_emit_expr(ctx, expr) != 0) return -1;
+            if (ctx->machine_bits == 16) {
+                if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC6) != 0) return -1; /* mov si, ax */
+            } else if (ctx->machine_bits == 32) {
+                if (mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* mov edi, eax */
+            } else {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC7) != 0) return -1; /* mov rdi, rax */
+            }
+            if (mc_emit_strlen_rdi_to_rsi(ctx) != 0) return -1;
+            
+            if (mode == MC_PRINT_MODE_EXE_PORTAL) {
+                return mc_emit_exe_portal_print_call(ctx);
+            } else if (mode == MC_PRINT_MODE_WSYS_DBGPRINT) {
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 ||
+                    mc_emit_u8(&ctx->code, 0xF9) != 0) return -1; /* mov rcx, rdi */
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+                    mc_emit_u8(&ctx->code, 0xEC) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* sub rsp, 0x20 */
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x8B) != 0 ||
+                    mc_emit_u8(&ctx->code, 0x05) != 0 || mc_emit_u32(&ctx->code, WSYS_IAT_MARK_DBGPRINT) != 0) return -1; /* mov rax, [rip+iat] */
+                if (mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xD0) != 0) return -1; /* call rax */
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x83) != 0 ||
+                    mc_emit_u8(&ctx->code, 0xC4) != 0 || mc_emit_u8(&ctx->code, 0x20) != 0) return -1; /* add rsp, 0x20 */
+                return 0;
+            } else if (mode == MC_PRINT_MODE_RAW) {
+                return mc_emit_raw_print_call(ctx);
+            } else {
+                return mc_emit_syscall_print_call(ctx);
+            }
+        }
+        return mc_emit_print_u64_hex_runtime(ctx, mode, expr);
+    }
+    if (type_name && strstr(type_name, "Addr") != NULL) {
+        return mc_emit_print_u64_hex_runtime(ctx, mode, expr);
+    }
+    
+    /* 默认情况：将无法明确识别的类型（包括由于 AST 推导缺陷变成函数名的类型）全作为无符号十进制数打印 */
+    return mc_emit_print_u64_dec_runtime(ctx, mode, expr);
 }
 
 static int mc_emit_exe_portal_entry(McCtx *ctx, const char *target_name) {
@@ -6257,6 +6366,53 @@ static int mc_emit_expr_a64(McCtx *ctx, ASTNode *expr) {
             if (mc_emit_a64_push_reg(ctx, 0) != 0) return -1;
             if (mc_emit_expr(ctx, expr->data.binary_op.right) != 0) return -1;
             if (mc_emit_a64_pop_reg(ctx, 1) != 0) return -1;
+            if (expr->data.binary_op.left->type == AST_PBIT_SLICE && expr->data.binary_op.right->type == AST_PBIT_SLICE && (strcmp(op, "==") == 0 || strcmp(op, "!=") == 0)) {
+                ASTNode *l_slice = expr->data.binary_op.left;
+                ASTNode *r_slice = expr->data.binary_op.right;
+                McSymbol *l_sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, l_slice->data.pbit_slice.object->data.ident.name);
+                McSymbol *r_sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, r_slice->data.pbit_slice.object->data.ident.name);
+                if (!l_sym || !r_sym) return -1;
+                if (mc_emit_load_acc_from_stack(ctx, l_sym->stack_offset + 16) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push left size
+                if (mc_emit_load_acc_from_stack(ctx, l_sym->stack_offset) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push left start
+                
+                if (mc_emit_load_acc_from_stack(ctx, r_sym->stack_offset + 16) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push right size
+                if (mc_emit_load_acc_from_stack(ctx, r_sym->stack_offset) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push right start
+                
+                if (mc_emit_u8(&ctx->code, 0x5E) != 0) return -1; // pop rsi (r_start)
+                if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (r_size)
+                if (mc_emit_u8(&ctx->code, 0x5F) != 0) return -1; // pop rdi (l_start)
+                if (mc_emit_u8(&ctx->code, 0x58) != 0) return -1; // pop rax (l_size)
+                
+                if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x39) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1;
+                int l_fail = mc_new_label(ctx);
+                if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x85) != 0) return -1;
+                size_t jne_off = ctx->code.size;
+                if (mc_emit_u32(&ctx->code, 0) != 0) return -1;
+                if (mc_add_branch_fixup(ctx, l_fail, jne_off, 4) != 0) return -1;
+                
+                if (mc_emit_u8(&ctx->code, 0xF3) != 0 || mc_emit_u8(&ctx->code, 0xA6) != 0) return -1; // repe cmpsb
+                if (strcmp(op, "==") == 0) {
+                    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x94) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+                } else {
+                    if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0x95) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+                }
+                if (mc_emit_u8(&ctx->code, 0x0F) != 0 || mc_emit_u8(&ctx->code, 0xB6) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+                
+                int l_end = mc_new_label(ctx);
+                if (mc_emit_jmp_label(ctx, l_end) != 0) return -1;
+                if (mc_bind_label(ctx, l_fail) != 0) return -1;
+                if (strcmp(op, "==") == 0) {
+                    if (mc_emit_mov_acc_imm(ctx, 0) != 0) return -1;
+                } else {
+                    if (mc_emit_mov_acc_imm(ctx, 1) != 0) return -1;
+                }
+                if (mc_bind_label(ctx, l_end) != 0) return -1;
+                return 0;
+            }
 
             if (strcmp(op, "+") == 0) return mc_emit_a64_insn(&ctx->code, a64_insn_add_reg(0, 1, 0));
             if (strcmp(op, "-") == 0) return mc_emit_a64_insn(&ctx->code, a64_insn_sub_reg(0, 1, 0));
@@ -6528,6 +6684,9 @@ static int mc_emit_stmt_a64(McCtx *ctx, ASTNode *stmt) {
             return 0;
         }
         case AST_ASSIGNMENT: {
+            if (stmt->data.assignment.left && stmt->data.assignment.left->type == AST_PBIT_SLICE) {
+                return -1;
+            }
             char full_path[256];
             if (stmt->data.assignment.left && stmt->data.assignment.left->type == AST_ACCESS &&
                 mc_build_access_path(stmt->data.assignment.left, full_path, sizeof(full_path)) == 0) {
@@ -6704,6 +6863,21 @@ static int mc_emit_stmt_a64(McCtx *ctx, ASTNode *stmt) {
 static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
     const char *op;
     int i;
+    if (expr->type == AST_PBIT_SLICE) {
+        // Evaluate start offset of the slice
+        McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, expr->data.pbit_slice.object->data.ident.name);
+        if (!sym) return -1;
+        if (expr->data.pbit_slice.is_full_block) {
+            return mc_emit_load_acc_from_stack(ctx, sym->stack_offset);
+        } else {
+            if (mc_emit_expr(ctx, expr->data.pbit_slice.start_offset) != 0) return -1;
+            if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push start_offset
+            if (mc_emit_load_acc_from_stack(ctx, sym->stack_offset) != 0) return -1; // rax = base
+            if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (start_offset)
+            if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // add rax, rcx
+            return 0;
+        }
+    }
     int max_reg_args;
     if (!ctx || !expr) return mc_emit_mov_acc_imm(ctx, 0);
     if (mc_is_aarch64(ctx)) return mc_emit_expr_a64(ctx, expr);
@@ -6959,15 +7133,17 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
                 if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
                 return (mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC8)) ? -1 : 0;
             } else if (strcmp(op, "<<") == 0 || strcmp(op, ">>") == 0) {
-                if (mc_emit_u8(&ctx->code, 0x88) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; /* mov cl, al */
+                /* 交换 rax (位移量) 和 rcx (被移数)，使位移量落入 cl 寄存器，同时保证被移数安全进入 rax */
+                if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+                if (mc_emit_u8(&ctx->code, 0x91) != 0) return -1; /* xchg rax, rcx */
+
                 if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
                 if (strcmp(op, "<<") == 0) {
-                    if (mc_emit_u8(&ctx->code, 0xD3) != 0 || mc_emit_u8(&ctx->code, 0xE1) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0xD3) != 0 || mc_emit_u8(&ctx->code, 0xE0) != 0) return -1; /* shl rax, cl */
                 } else {
-                    if (mc_emit_u8(&ctx->code, 0xD3) != 0 || mc_emit_u8(&ctx->code, 0xF9) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0xD3) != 0 || mc_emit_u8(&ctx->code, 0xF8) != 0) return -1; /* sar rax, cl */
                 }
-                if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-                return (mc_emit_u8(&ctx->code, 0x89) || mc_emit_u8(&ctx->code, 0xC8)) ? -1 : 0;
+                return 0;
             }
             return 0;
         case AST_CALL: {
@@ -7357,6 +7533,20 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
         }
         case AST_ACCESS: {
             char access_global_path[256];
+            
+            if (expr->data.access.object && expr->data.access.object->type == AST_IDENT) {
+                McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, expr->data.access.object->data.ident.name);
+                if (sym && sym->type_name && strcmp(sym->type_name, "pbit_block") == 0) {
+                    if (strcmp(expr->data.access.member, "start") == 0) {
+                        return mc_emit_load_acc_from_stack(ctx, sym->stack_offset);
+                    } else if (strcmp(expr->data.access.member, "end") == 0) {
+                        return mc_emit_load_acc_from_stack(ctx, sym->stack_offset + 8);
+                    } else if (strcmp(expr->data.access.member, "size") == 0) {
+                        return mc_emit_load_acc_from_stack(ctx, sym->stack_offset + 16);
+                    }
+                }
+            }
+
             if (mc_build_access_path(expr, access_global_path, sizeof(access_global_path)) == 0) {
                 McSymbol *gsym = mc_find_symbol(ctx->global_symbols, ctx->global_symbol_count, access_global_path);
                 if (gsym && gsym->kind == MC_SYM_GLOBAL) {
@@ -7512,6 +7702,58 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
     if (!ctx || !stmt) return 0;
     if (mc_is_aarch64(ctx)) return mc_emit_stmt_a64(ctx, stmt);
     switch (stmt->type) {
+        case AST_PBIT_DECL: {
+            const char *name = stmt->data.pbit_decl.name;
+            McSymbol *sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, name);
+            if (!sym) return -1;
+
+            if (stmt->data.pbit_decl.is_block) {
+                if (stmt->data.pbit_decl.end_expr != NULL) {
+                    /* 处理字面量声明 [start ' end] */
+                    if (mc_emit_expr(ctx, stmt->data.pbit_decl.start_expr) != 0) return -1;
+                    if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset, 8) != 0) return -1;
+                    if (mc_emit_expr(ctx, stmt->data.pbit_decl.end_expr) != 0) return -1;
+                    if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset + 8, 8) != 0) return -1;
+
+                    /* 计算并存储 size = end - start + 1 */
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push rax(end)
+                    if (mc_emit_load_acc_from_stack(ctx, sym->stack_offset) != 0) return -1; // rax = start
+                    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx(end)
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x29) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // sub rcx, rax
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // inc rcx
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // mov rax, rcx
+                    if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset + 16, 8) != 0) return -1;
+                } else {
+                    /* 工业级处理：从切片表达式初始化块量 */
+                    ASTNode *expr = stmt->data.pbit_decl.start_expr;
+                    if (expr->type == AST_PBIT_SLICE) {
+                        /* 1. 计算切片起始点并存储到 \start */
+                        if (mc_emit_expr(ctx, expr) != 0) return -1; // pbit_slice 表达式结果就是计算后的起始地址
+                        if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset, 8) != 0) return -1;
+
+                        /* 2. 计算切片大小并存储到 \size */
+                        McSymbol *obj_sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, expr->data.pbit_slice.object->data.ident.name);
+                        if (mc_emit_expr(ctx, expr->data.pbit_slice.end_offset) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push end_off
+                        if (mc_emit_expr(ctx, expr->data.pbit_slice.start_offset) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (end_off)
+                        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x29) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // sub rcx, rax
+                        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // inc rcx
+                        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x89) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // mov rax, rcx
+                        if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset + 16, 8) != 0) return -1;
+
+                        /* 3. 计算 \end = start + size - 1 */
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push size
+                        if (mc_emit_load_acc_from_stack(ctx, sym->stack_offset) != 0) return -1; // rax = start
+                        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (size)
+                        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // add rax, rcx
+                        if (mc_emit_u8(&ctx->code, 0x48) || mc_emit_u8(&ctx->code, 0xFF) || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // dec rax
+                        if (mc_emit_store_acc_to_base_disp_width(ctx, 5, sym->stack_offset + 8, 8) != 0) return -1;
+                    }
+                }
+            }
+            return 0;
+        }
         case AST_RETURN_STMT:
             if (stmt->data.return_stmt.value) {
                 if (mc_emit_expr(ctx, stmt->data.return_stmt.value) != 0) return -1;
@@ -7636,6 +7878,67 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
             return 0;
         }
         case AST_ASSIGNMENT: {
+            if (stmt->data.assignment.left && stmt->data.assignment.left->type == AST_PBIT_SLICE) {
+                ASTNode *slice = stmt->data.assignment.left;
+                ASTNode *rhs = stmt->data.assignment.right;
+                const char *dst_name = slice->data.pbit_slice.object->data.ident.name;
+                McSymbol *dst_sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, dst_name);
+                if (!dst_sym) return -1;
+                
+                if (slice->data.pbit_slice.is_full_block) {
+                    if (mc_emit_load_acc_from_stack(ctx, dst_sym->stack_offset + 16) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push dest size
+                    if (mc_emit_load_acc_from_stack(ctx, dst_sym->stack_offset) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push dest start
+                } else {
+                    if (mc_emit_expr(ctx, slice->data.pbit_slice.start_offset) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push start_offset
+                    if (mc_emit_load_acc_from_stack(ctx, dst_sym->stack_offset) != 0) return -1; // rax = base
+                    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (start_offset)
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1; // add rax, rcx
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push calculated start
+
+                    if (mc_emit_expr(ctx, slice->data.pbit_slice.end_offset) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push end_offset
+                    if (mc_emit_expr(ctx, slice->data.pbit_slice.start_offset) != 0) return -1;
+                    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (end_offset)
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x29) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // sub rcx, rax
+                    if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0xFF) != 0 || mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; // inc rcx
+                    if (mc_emit_u8(&ctx->code, 0x51) != 0) return -1; // push rcx (size)
+                }
+                
+                if (rhs->type == AST_PBIT_SLICE) {
+                    const char *src_name = rhs->data.pbit_slice.object->data.ident.name;
+                    McSymbol *src_sym = mc_find_symbol(ctx->local_symbols, ctx->local_symbol_count, src_name);
+                    if (!src_sym) return -1;
+                    
+                    if (rhs->data.pbit_slice.is_full_block) {
+                        if (mc_emit_load_acc_from_stack(ctx, src_sym->stack_offset) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push src start
+                    } else {
+                        if (mc_emit_expr(ctx, rhs->data.pbit_slice.start_offset) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push start_offset
+                        if (mc_emit_load_acc_from_stack(ctx, src_sym->stack_offset) != 0) return -1; // rax = base
+                        if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (start_offset)
+                        if (mc_emit_u8(&ctx->code, 0x48) != 0 || mc_emit_u8(&ctx->code, 0x01) != 0 || mc_emit_u8(&ctx->code, 0xC8) != 0) return -1;
+                        if (mc_emit_u8(&ctx->code, 0x50) != 0) return -1; // push src start
+                    }
+                    
+                    if (mc_emit_u8(&ctx->code, 0x5E) != 0) return -1; // pop rsi (src_start)
+                    if (mc_emit_u8(&ctx->code, 0x5F) != 0) return -1; // pop rdi (dst_start)
+                    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (size)
+                    
+                    if (mc_emit_u8(&ctx->code, 0xF3) != 0 || mc_emit_u8(&ctx->code, 0xA4) != 0) return -1; // rep movsb
+                } else {
+                    if (mc_emit_expr(ctx, rhs) != 0) return -1; // RAX = value
+                    if (mc_emit_u8(&ctx->code, 0x5F) != 0) return -1; // pop rdi (dst_start)
+                    if (mc_emit_u8(&ctx->code, 0x59) != 0) return -1; // pop rcx (size)
+                    
+                    if (mc_emit_u8(&ctx->code, 0xF3) != 0 || mc_emit_u8(&ctx->code, 0xAA) != 0) return -1; // rep stosb
+                }
+                return 0;
+            }
+
             int right_emitted = 0;
             if (stmt->data.assignment.left && stmt->data.assignment.left->type == AST_IDENT) {
                 const char *left_name = stmt->data.assignment.left->data.ident.name;
@@ -9072,6 +9375,15 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
             break;
         case AST_VAR_DECL:
             trace_calls(prog, node->data.var_decl.init, reachable_flags);
+            break;
+        case AST_PBIT_DECL:
+            trace_calls(prog, node->data.pbit_decl.start_expr, reachable_flags);
+            trace_calls(prog, node->data.pbit_decl.end_expr, reachable_flags);
+            break;
+        case AST_PBIT_SLICE:
+            trace_calls(prog, node->data.pbit_slice.object, reachable_flags);
+            trace_calls(prog, node->data.pbit_slice.start_offset, reachable_flags);
+            trace_calls(prog, node->data.pbit_slice.end_offset, reachable_flags);
             break;
         case AST_ASSIGNMENT:
             trace_calls(prog, node->data.assignment.left, reachable_flags);

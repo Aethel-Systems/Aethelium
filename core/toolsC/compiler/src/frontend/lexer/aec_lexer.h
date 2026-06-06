@@ -65,6 +65,9 @@ typedef enum {
     TK_SYS = 159,      /* 新增：sys 关键字 */
     TK_CONST = 150,    /* 新增：const 关键字 */
     TK_USE = 151,      /* 新增：use 关键字 */
+    TK_PBIT = 160,     /* 新增：pbit 关键字 */
+    TK_TICK = 161,     /* 新增：单引号 tick 操作符 */
+    TK_QUOTE = 162,    /* 新增：双引号 quote 操作符 */
     
     TK_METAL = 45,     /* 系统层关键字 */
     TK_PTR = 46,

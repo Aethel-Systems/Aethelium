@@ -66,6 +66,8 @@ typedef enum {
     AST_TUPLE_LITERAL,  /* 新增：元组字面量 (x, y, z) */
     AST_TUPLE_PATTERN,  /* 新增：元组解构模式 (a, b) */
     AST_REFERENCE,      /* 新增：引用 &value */
+    AST_PBIT_DECL,      /* 新增：pbit 声明 */
+    AST_PBIT_SLICE,     /* 新增：pbit 块区间访问/切片 */
     /* 系统层特性 */
     AST_METAL_BLOCK,    /* 新增：metal { ... } 块 */
     AST_ASM_BLOCK,      /* 新增：asm { ... } 内联汇编 */
@@ -303,6 +305,22 @@ struct ASTNode {
         struct {
             ASTNode *operand;
         } reference;
+
+        /* 新增：pbit 声明 */
+        struct {
+            char *name;
+            int is_block;
+            ASTNode *start_expr;
+            ASTNode *end_expr;
+        } pbit_decl;
+
+        /* 新增：pbit 块区间访问/切片 (例如 parent:[0x10 ' 0x50] 或 parent:[]) */
+        struct {
+            ASTNode *object;
+            ASTNode *start_offset;
+            ASTNode *end_offset;
+            int is_full_block;
+        } pbit_slice;
         
         /* 新增：结构体声明（带属性装饰器支持） */
         struct {
