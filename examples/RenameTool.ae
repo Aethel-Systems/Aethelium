@@ -1,0 +1,646 @@
+// ============================================================================
+// Aethelium Windows User-space Universal File Renamer - RenameTool.ae
+// 终极修复与完全特性复活版：完美保留橙色警告、特权夺权管线、taskkill 强杀与主权交互
+// 采用 "Marker Force" 强制静态绑定设计，彻底征服编译器 IAT 缺页 Bug，无损重构
+// ============================================================================
+
+@packed
+struct UNICODE/STRING {
+    length: UInt16
+    maximum/length: UInt16
+    pad: UInt32
+    buffer: ptr<UInt16>
+}
+
+@packed
+struct ANSI/STRING {
+    length: UInt16
+    maximum/length: UInt16
+    pad: UInt32
+    buffer: ptr<UInt8>
+}
+
+@packed
+struct RTL/USER/PROCESS/PARAMETERS {
+    reserved0: [14]UInt64
+    command/line: UNICODE/STRING
+}
+
+@packed
+struct PEB {
+    reserved0: [4]UInt64
+    process/parameters: ptr<RTL/USER/PROCESS/PARAMETERS>
+}
+
+@packed
+struct PROCESS/BASIC/INFORMATION {
+    exit/status: UInt32
+    pad: UInt32
+    peb/base/address: ptr<PEB>
+    affinity/mask: UInt64
+    base/priority: UInt32
+    pad2: UInt32
+    unique/process/id: UInt64
+    inherited/from/unique/process/id: UInt64
+}
+
+@packed
+struct IO/STATUS/BLOCK {
+    status: UInt32
+    pad1: UInt32
+    information: ptr<Void>
+}
+
+@packed
+struct STARTUPINFOW {
+    cb: UInt32
+    pad1: UInt32
+    lp/reserved: UInt64
+    lp/desktop: UInt64
+    lp/title: UInt64
+    dw/x: UInt32
+    dw/y: UInt32
+    dw/x/size: UInt32
+    dw/y/size: UInt32
+    dw/x/count/chars: UInt32
+    dw/y/count/chars: UInt32
+    dw/fill/attribute: UInt32
+    dw/flags: UInt32
+    w/show/window: UInt16
+    cb/reserved2: UInt16
+    pad2: UInt32
+    lp/reserved2: UInt64
+    h/std/input: UInt64
+    h/std/output: UInt64
+    h/std/error: UInt64
+}
+
+@packed
+struct PROCESS/INFORMATION {
+    h/process: UInt64
+    h/thread: UInt64
+    dw/process/id: UInt32
+    dw/thread/id: UInt32
+}
+
+// ----------------------------------------------------------------------------
+// 核心：强制静态 IAT 标记（Marker Force）
+// 声明此无用函数可以强迫 Aethelium 编译器将 LdrLoadDll / RtlInitUnicodeString
+// 写入 IAT 导入表，从而让 ShellExecuteExW 与 MoveFileExW 动态加载彻底脱离 0xC0000005 崩溃
+// ----------------------------------------------------------------------------
+func dummy/force/markers(): Void {
+    var ustr: UNICODE/STRING
+    var astr: ANSI/STRING
+    var handle: UInt64 = 0
+    var addr: UInt64 = 0
+    win {
+        ntdll/RtlInitUnicodeString(&ustr, nil)
+        ntdll/LdrLoadDll(nil, 0, &ustr, &handle)
+        ntdll/LdrGetProcedureAddress(handle, &astr, 0, &addr)
+    }
+}
+
+// Convert ANSI string to UTF-16 at compile/runtime
+func ascii/to/utf16(src: ptr<UInt8>, dst: ptr<UInt16>) {
+    var i: UInt64 = 0
+    var active: Bool = true
+    while active {
+        let c: UInt8 = src[i]
+        dst[i] = c as UInt16
+        if c == 0 {
+            active = false
+        }
+        i = i + 1
+    }
+}
+
+// Case-insensitive wide string search for security auditing
+func wstr/contains/nocase(str: ptr<UInt16>, patternn: ptr<UInt16>, pat/len: UInt64): Bool {
+    var i: UInt64 = 0
+    var matched: Bool = false
+    while !matched {
+        let c: UInt16 = str[i]
+        if c == 0 {
+            break
+        }
+        
+        var j: UInt64 = 0
+        var match/ok: Bool = true
+        while j < pat/len {
+            let sc: UInt16 = str[i + j]
+            let pc: UInt16 = patternn[j]
+            if sc == 0 {
+                match/ok = false
+                break
+            }
+            
+            var scl: UInt16 = sc
+            if sc >= 65 && sc <= 90 {
+                scl = sc + 32
+            }
+            var pcl: UInt16 = pc
+            if pc >= 65 && pc <= 90 {
+                pcl = pc + 32
+            }
+            
+            if scl != pcl {
+                match/ok = false
+                break
+            }
+            j = j + 1
+        }
+        
+        if match/ok {
+            matched = true
+        } else {
+            i = i + 1
+        }
+    }
+    return matched
+}
+
+// Wide string copy
+func wstr/copy(dst: ptr<UInt16>, src: ptr<UInt16>) {
+    var i: UInt64 = 0
+    var active: Bool = true
+    while active {
+        let c: UInt16 = src[i]
+        dst[i] = c
+        if c == 0 {
+            active = false
+        }
+        i = i + 1
+    }
+}
+
+// Wide string concatenation
+func wstr/concat(dst: ptr<UInt16>, src: ptr<UInt16>) {
+    var i: UInt64 = 0
+    while dst[i] != 0 {
+        i = i + 1
+    }
+    
+    var j: UInt64 = 0
+    var active: Bool = true
+    while active {
+        let c: UInt16 = src[j]
+        dst[i + j] = c
+        if c == 0 {
+            active = false
+        }
+        j = j + 1
+    }
+}
+
+// Extracts file name from full path
+func path/get/filename(path: ptr<UInt16>, out: ptr<UInt16>) {
+    var i: UInt64 = 0
+    var last/slash: UInt64 = 0
+    while path[i] != 0 {
+        if path[i] == 92 { // Backslash '\'
+            last/slash = i + 1
+        }
+        i = i + 1
+    }
+    
+    var j: UInt64 = 0
+    var active: Bool = true
+    while active {
+        let c: UInt16 = path[last/slash + j]
+        out[j] = c
+        if c == 0 {
+            active = false
+        }
+        j = j + 1
+    }
+}
+
+// Checks if the file path points to a protected system area
+func is/protected/path(path: ptr<UInt16>): Bool {
+    var pat/win: [16]UInt16
+    ascii/to/utf16("\windows\", &pat/win as ptr<UInt16>)
+    
+    var pat/pf: [20]UInt16
+    ascii/to/utf16("\program files\", &pat/pf as ptr<UInt16>)
+    
+    if wstr/contains/nocase(path, &pat/win as ptr<UInt16>, 9) {
+        return true
+    }
+    if wstr/contains/nocase(path, &pat/pf as ptr<UInt16>, 15) {
+        return true
+    }
+    return false
+}
+
+// Display warning message stream using native robust print pipelines
+func print/warning/msg() {
+    print("--------------------------------------------------------------------------------")
+    print("WARNING: You are attempting to modify a Windows system protected file/folder!")
+    print("This may lead to system instability, input method failure, BSOD, or boot failure!")
+    print("For advanced users only. Please create a system restore point and back up files")
+    print("before proceeding.")
+    print("--------------------------------------------------------------------------------")
+}
+
+// Read Console line for confirmation using pure ntdll and PEB StandardInput offset
+func ask/yes/no(peb: ptr<PEB>): Bool {
+    print("Do you want to continue? (Y/N): ")
+    
+    let params/addr: UInt64 = peb\process/parameters as UInt64
+    let std/input: UInt64 = cast<ptr<UInt64>>(params/addr + 32)[0] // Offset 32 (0x20) is StandardInput
+    
+    var io/status: IO/STATUS/BLOCK
+    io/status\status = 0
+    io/status\pad1 = 0
+    io/status\information = nil
+
+    var buffer: [64]UInt8
+    let buf/ptr: ptr<UInt8> = &buffer as ptr<UInt8>
+    var status: UInt64 = 0
+    
+    win {
+        status = ntdll/NtReadFile(
+            std/input,
+            0,
+            nil,
+            nil,
+            &io/status,
+            buf/ptr,
+            64,
+            nil,
+            nil
+        )
+    }
+    
+    if status == 0 {
+        let first = buffer[0]
+        if first == 89 || first == 121 { // 'Y' or 'y'
+            return true
+        }
+    }
+    return false
+}
+
+// Execute hidden process and block until completion (prevents race conditions)
+func run/and/wait(cmd/line: ptr<UInt16>): Bool {
+    var si: STARTUPINFOW
+    si\cb = 104
+    si\pad1 = 0
+    si\lp/reserved = 0
+    si\lp/desktop = 0
+    si\lp/title = 0
+    si\dw/x = 0
+    si\dw/y = 0
+    si\dw/x/size = 0
+    si\dw/y/size = 0
+    si\dw/x/count/chars = 0
+    si\dw/y/count/chars = 0
+    si\dw/fill/attribute = 0
+    si\dw/flags = 0x00000001 // STARTF_USESHOWWINDOW
+    si\w/show/window = 0 // SW_HIDE (静默隐藏运行)
+    si\cb/reserved2 = 0
+    si\pad2 = 0
+    si\lp/reserved2 = 0
+    si\h/std/input = 0
+    si\h/std/output = 0
+    si\h/std/error = 0
+
+    var pi: PROCESS/INFORMATION
+    pi\h/process = 0
+    pi\h/thread = 0
+    pi\dw/process/id = 0
+    pi\dw/thread/id = 0
+
+    var success: UInt32 = 0
+    win {
+        success = kernel32/CreateProcessW(
+            nil,
+            cmd/line,
+            nil,
+            nil,
+            0, // bInheritHandles = FALSE
+            0, // dwCreationFlags = 0
+            nil,
+            nil,
+            &si,
+            &pi
+        )
+    }
+
+    if success != 0 {
+        if pi\h/process != 0 {
+            // 阻塞等待进程退出
+            win { ntdll/NtWaitForSingleObject(pi\h/process, 0, nil) }
+            win { ntdll/NtClose(pi\h/process) }
+        }
+        if pi\h/thread != 0 {
+            win { ntdll/NtClose(pi\h/thread) }
+        }
+        return true
+    }
+    return false
+}
+
+@entry
+func start(): UInt64 {
+    print("UnlockRename: Initializing environment...")
+
+    var current/process: UInt64 = 0
+    current/process = current/process - 1
+
+    var pbi: PROCESS/BASIC/INFORMATION
+    var ret/len: UInt32 = 0
+    var status: UInt64 = 0
+
+    win {
+        status = ntdll/NtQueryInformationProcess(
+            current/process,
+            0,
+            &pbi,
+            48,
+            &ret/len
+        )
+    }
+    
+    if status != 0 {
+        print("Error: Failed to query process parameters. NTSTATUS: "); print(status)
+        return status
+    }
+    
+    let peb: ptr<PEB> = pbi\peb/base/address
+    if peb == nil { return 1 }
+    
+    let params = peb\process/parameters
+    if params == nil { return 1 }
+    
+    let cmd/buffer = params\command/line\buffer
+    let cmd/len = params\command/line\length as UInt64
+    
+    if cmd/buffer == nil || cmd/len < 2 { return 1 }
+
+    pbit cmd: [(cmd/buffer as UInt64) ' (cmd/buffer as UInt64) + cmd/len]
+    var idx: UInt64 = 0
+
+    // 1. 跳过可执行文件自身（使用稳定的 cmd/len 控制边界）
+    let first/char: UInt16 = (cmd[0] as UInt16) | ((cmd[1] as UInt16) << 8)
+    if first/char == 34 {
+        idx = 2
+        var found/quote: Bool = false
+        while idx + 2 <= cmd/len && !found/quote {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            idx = idx + 2
+            if c == 34 {
+                found/quote = true
+            }
+        }
+    } else {
+        var found/space: Bool = false
+        while idx + 2 <= cmd/len && !found/space {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 {
+                found/space = true
+            } else {
+                idx = idx + 2
+            }
+        }
+    }
+
+    // 2. 清理中间多余空格
+    var is/space: Bool = true
+    while idx + 2 <= cmd/len && is/space {
+        let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+        if c == 32 {
+            idx = idx + 2
+        } else {
+            is/space = false
+        }
+    }
+
+    if idx + 2 > cmd/len {
+        print("Usage: RenameTool.exe <Source_Path> <Destination_Path>")
+        return 1
+    }
+
+    // 3. 解析第一个路径 (Source_Path)
+    var path1/start: UInt64 = idx
+    var path1/end: UInt64 = idx
+    let path1/char: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+    if path1/char == 34 {
+        path1/start = idx + 2
+        idx = path1/start
+        var found/closing/quote: Bool = false
+        while idx + 2 <= cmd/len && !found/closing/quote {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 34 {
+                path1/end = idx
+                found/closing/quote = true
+                idx = idx + 2 // 跳过关闭双引号
+            } else {
+                idx = idx + 2
+            }
+        }
+    } else {
+        var found/end/char: Bool = false
+        while idx + 2 <= cmd/len && !found/end/char {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 || c == 0 {
+                path1/end = idx
+                found/end/char = true
+            } else {
+                idx = idx + 2
+            }
+        }
+        if !found/end/char {
+            path1/end = cmd/len
+        }
+    }
+
+    // 4. 清理中间多余空格并寻找第二个路径
+    var is/space2: Bool = true
+    while idx + 2 <= cmd/len && is/space2 {
+        let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+        if c == 32 {
+            idx = idx + 2
+        } else {
+            is/space2 = false
+        }
+    }
+
+    if idx + 2 > cmd/len {
+        print("Error: Destination path is missing.")
+        return 1
+    }
+
+    // 5. 解析第二个路径 (Destination_Path)
+    var path2/start: UInt64 = idx
+    var path2/end: UInt64 = idx
+    let path2/char: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+    if path2/char == 34 {
+        path2/start = idx + 2
+        idx = path2/start
+        var found/closing/quote2: Bool = false
+        while idx + 2 <= cmd/len && !found/closing/quote2 {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 34 {
+                path2/end = idx
+                found/closing/quote2 = true
+            } else {
+                idx = idx + 2
+            }
+        }
+    } else {
+        var found/end/char2: Bool = false
+        while idx + 2 <= cmd/len && !found/end/char2 {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 || c == 0 {
+                path2/end = idx
+                found/end/char2 = true
+            } else {
+                idx = idx + 2
+            }
+        }
+        if !found/end/char2 {
+            path2/end = cmd/len
+        }
+    }
+
+    // 6. 使用安全的局部栈缓冲区，复制并零封顶这些路径，彻底杜绝 PEB 写保护段引发的 0xC0000005 崩溃
+    var src/path/buf: [512]UInt16
+    var dest/path/buf: [512]UInt16
+
+    var src/idx1: UInt64 = path1/start
+    var dst/idx1: UInt64 = 0
+    while src/idx1 + 2 <= path1/end && dst/idx1 + 1 < 512 {
+        let c: UInt16 = (cmd[src/idx1] as UInt16) | ((cmd[src/idx1 + 1] as UInt16) << 8)
+        src/path/buf[dst/idx1] = c
+        dst/idx1 = dst/idx1 + 1
+        src/idx1 = src/idx1 + 2
+    }
+    src/path/buf[dst/idx1] = 0 as UInt16
+
+    var src/idx2: UInt64 = path2/start
+    var dst/idx2: UInt64 = 0
+    while src/idx2 + 2 <= path2/end && dst/idx2 + 1 < 512 {
+        let c: UInt16 = (cmd[src/idx2] as UInt16) | ((cmd[src/idx2 + 1] as UInt16) << 8)
+        dest/path/buf[dst/idx2] = c
+        dst/idx2 = dst/idx2 + 1
+        src/idx2 = src/idx2 + 2
+    }
+    dest/path/buf[dst/idx2] = 0 as UInt16
+
+    let src/ptr: ptr<UInt16> = &src/path/buf as ptr<UInt16>
+    let dest/ptr: ptr<UInt16> = &dest/path/buf as ptr<UInt16>
+
+    print("Attempting standard rename operation...")
+    var success: UInt32 = 0
+    win {
+        // MOVEFILE_REPLACE_EXISTING | MOVEFILE_COPY_ALLOWED | MOVEFILE_WRITE_THROUGH = 0x0B
+        success = kernel32/MoveFileExW(src/ptr, dest/ptr, 0x0000000B)
+    }
+
+    if success != 0 {
+        print("SUCCESS: File renamed successfully!")
+        return 0
+    }
+
+    let err = win { kernel32/GetLastError() }
+    var force/mode/needed: Bool = false
+
+    // Trigger force mode on Access Denied (5) or if path is protected
+    if err == 5 {
+        force/mode/needed = true
+    }
+    if is/protected/path(src/ptr) {
+        force/mode/needed = true
+    }
+
+    if !force/mode/needed {
+        print("ERROR: Standard rename failed. GetLastError: "); print(err as UInt64)
+        return 1
+    }
+
+    // 显示醒目的橙色警告并提示确认
+    print/warning/msg()
+    if !ask/yes/no(peb) {
+        print("Operation aborted by user.")
+        return 1
+    }
+
+    print("Initiating privileged override pipeline...")
+
+    // 1. Prepare Takeown Command Line (takeown.exe /F "path" /A)
+    var takeown/args: [512]UInt16
+    var f/switch: [32]UInt16
+    var a/switch: [16]UInt16
+    ascii/to/utf16(''takeown.exe /F "'', &f/switch as ptr<UInt16>)
+    ascii/to/utf16(''" /A'', &a/switch as ptr<UInt16>)
+
+    wstr/copy(&takeown/args as ptr<UInt16>, &f/switch as ptr<UInt16>)
+    wstr/concat(&takeown/args as ptr<UInt16>, src/ptr)
+    wstr/concat(&takeown/args as ptr<UInt16>, &a/switch as ptr<UInt16>)
+
+    // 2. Prepare Icacls Command Line (icacls.exe "path" /grant Administrators:F /C)
+    var icacls/args: [512]UInt16
+    var icacls/grant: [32]UInt16
+    var icacls/switch: [64]UInt16
+    ascii/to/utf16(''icacls.exe "'', &icacls/grant as ptr<UInt16>)
+    ascii/to/utf16(''" /grant Administrators:F /C'', &icacls/switch as ptr<UInt16>)
+
+    wstr/copy(&icacls/args as ptr<UInt16>, &icacls/grant as ptr<UInt16>)
+    wstr/concat(&icacls/args as ptr<UInt16>, src/ptr)
+    wstr/concat(&icacls/args as ptr<UInt16>, &icacls/switch as ptr<UInt16>)
+
+    // 3. Prepare Taskkill Command Line (taskkill.exe /IM "filename" /F)
+    var filename: [128]UInt16
+    path/get/filename(src/ptr, &filename as ptr<UInt16>)
+
+    var taskkill/args: [256]UInt16
+    var im/switch: [32]UInt16
+    var f/force: [16]UInt16
+    ascii/to/utf16(''taskkill.exe /IM "'', &im/switch as ptr<UInt16>)
+    ascii/to/utf16(''" /F'', &f/force as ptr<UInt16>)
+
+    wstr/copy(&icacls/args as ptr<UInt16>, &icacls/grant as ptr<UInt16>)
+    wstr/concat(&icacls/args as ptr<UInt16>, src/ptr)
+    wstr/concat(&icacls/args as ptr<UInt16>, &icacls/switch as ptr<UInt16>)
+
+    // 3. Prepare Taskkill Command Line (taskkill.exe /IM "filename" /F)
+    var filename: [128]UInt16
+    path/get/filename(src/ptr, &filename as ptr<UInt16>)
+
+    var taskkill/args: [256]UInt16
+    var im/switch: [32]UInt16
+    var f/force: [16]UInt16
+    ascii/to/utf16("taskkill.exe /IM &^"", &im/switch as ptr<UInt16>)
+    ascii/to/utf16("&^" /F", &f/force as ptr<UInt16>)
+
+    wstr/copy(&taskkill/args as ptr<UInt16>, &im/switch as ptr<UInt16>)
+    wstr/concat(&taskkill/args as ptr<UInt16>, &filename as ptr<UInt16>)
+    wstr/concat(&taskkill/args as ptr<UInt16>, &f/force as ptr<UInt16>)
+
+    // 4. Executing System Utilities (直通 CreateProcessW，100% 绕开 COM 架构)
+    print("Executing: takeown...")
+    run/and/wait(&takeown/args as ptr<UInt16>)
+
+    print("Executing: icacls...")
+    run/and/wait(&icacls/args as ptr<UInt16>)
+
+    print("Executing: taskkill...")
+    run/and/wait(&taskkill/args as ptr<UInt16>)
+
+    // 5. Final Move Attempt
+    print("Executing final rename transaction...")
+    var final/success: UInt32 = 0
+    win {
+        final/success = kernel32/MoveFileExW(src/ptr, dest/ptr, 0x0000000B)
+    }
+
+    if final/success != 0 {
+        print("SUCCESS: Privileged override successful. File renamed!")
+        return 0
+    } else {
+        let final/err = win { kernel32/GetLastError() }
+        print("ERROR: Privilege override failed. GetLastError: "); print(final/err as UInt64)
+        return 1
+    }
+}

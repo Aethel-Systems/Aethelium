@@ -1,0 +1,351 @@
+// ============================================================================
+// Aethelium Windows User-space Force File Wiper - UnlockDelete.ae
+// 修复版：通过 SYNCHRONIZE 权限和 NtWaitForSingleObject 确保进程彻底退出后再执行删除
+// ============================================================================
+
+@packed
+struct UNICODE/STRING {
+    length: UInt16
+    maximum/length: UInt16
+    pad: UInt32
+    buffer: ptr<UInt16>
+}
+
+@packed
+struct RTL/USER/PROCESS/PARAMETERS {
+    reserved0: [14]UInt64
+    command/line: UNICODE/STRING
+}
+
+@packed
+struct PEB {
+    reserved0: [4]UInt64
+    process/parameters: ptr<RTL/USER/PROCESS/PARAMETERS>
+}
+
+@packed
+struct TEB {
+    reserved0: [12]UInt64
+    peb: ptr<PEB>
+}
+
+@packed
+struct OBJECT/ATTRIBUTES {
+    length: UInt32
+    pad1: UInt32
+    root/directory: ptr<Void>
+    object/name: ptr<UNICODE/STRING>
+    attributes: UInt32
+    pad2: UInt32
+    security/descriptor: ptr<Void>
+    security/quality/of/service: ptr<Void>
+}
+
+@packed
+struct CLIENT/ID {
+    unique/process: UInt64
+    unique/thread: UInt64
+}
+
+@packed
+struct IO/STATUS/BLOCK {
+    status: UInt32
+    pad1: UInt32
+    information: ptr<Void>
+}
+
+@packed
+struct FILE/DISPOSITION/INFORMATION {
+    delete/file: UInt8
+}
+
+@packed
+struct PROCESS/BASIC/INFORMATION {
+    exit/status: UInt32
+    pad: UInt32
+    peb/base/address: ptr<PEB>
+    affinity/mask: UInt64
+    base/priority: UInt32
+    pad2: UInt32
+    unique/process/id: UInt64
+    inherited/from/unique/process/id: UInt64
+}
+
+func TerminatePreemptingProcess(process/id: UInt64): UInt64 {
+    var status: UInt64 = 0
+    var process/handle: UInt64 = 0
+    var obj/attrs: OBJECT/ATTRIBUTES
+    obj/attrs\length = 48
+    obj/attrs\pad1 = 0
+    obj/attrs\root/directory = nil
+    obj/attrs\object/name = nil
+    obj/attrs\attributes = 0
+    obj/attrs\pad2 = 0
+    obj/attrs\security/descriptor = nil
+    obj/attrs\security/quality/of/service = nil
+
+    var cid: CLIENT/ID
+    cid\unique/process = process/id
+    cid\unique/thread = 0
+
+    win {
+        // 使用 PROCESS_TERMINATE (0x0001) | SYNCHRONIZE (0x00100000) = 0x00100001
+        // 必须申请 SYNCHRONIZE 权限，后续才可对进程句柄执行等待
+        status = ntdll/NtOpenProcess(&process/handle, 0x00100001, &obj/attrs, &cid)
+    }
+    
+    if status == 0 {
+        win {
+            status = ntdll/NtTerminateProcess(process/handle, 0)
+            // 等待进程彻底结束（使用无期限等待，超时传入 nil）
+            ntdll/NtWaitForSingleObject(process/handle, 0, nil)
+            ntdll/NtClose(process/handle)
+        }
+    }
+    return status
+}
+
+func MarkFileForDeletion(path/buffer: ptr<UInt16>, path/len: UInt16): UInt64 {
+    var status: UInt64 = 0
+    var file/handle: UInt64 = 0
+    var io/status: IO/STATUS/BLOCK
+    var obj/attrs: OBJECT/ATTRIBUTES
+    var uni/path: UNICODE/STRING
+    
+    uni/path\length = path/len
+    uni/path\maximum/length = path/len
+    uni/path\pad = 0
+    uni/path\buffer = path/buffer
+    
+    obj/attrs\length = 48
+    obj/attrs\pad1 = 0
+    obj/attrs\root/directory = nil
+    obj/attrs\object/name = &uni/path
+    obj/attrs\attributes = 0x00000040 // OBJ_CASE_INSENSITIVE
+    obj/attrs\pad2 = 0
+    obj/attrs\security/descriptor = nil
+    obj/attrs\security/quality/of/service = nil
+
+    io/status\status = 0
+    io/status\pad1 = 0
+    io/status\information = nil
+
+    win {
+        status = ntdll/NtCreateFile(
+            &file/handle,
+            0x00010000, // DELETE
+            &obj/attrs,
+            &io/status,
+            nil,
+            0,
+            0x00000007, // FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE
+            0x00000001, // FILE_OPEN
+            0x00000040, // FILE_NON_DIRECTORY_FILE
+            nil,
+            0
+        )
+    }
+
+    if status != 0 { return status }
+
+    var disp/info: FILE/DISPOSITION/INFORMATION
+    disp/info\delete/file = 1
+
+    win {
+        status = ntdll/NtSetInformationFile(
+            file/handle,
+            &io/status,
+            &disp/info,
+            1,
+            13 // FileDispositionInformation
+        )
+        ntdll/NtClose(file/handle)
+    }
+    return status
+}
+
+@entry
+func start(): UInt64 {
+    print("Unlocker: Initializing runtime access...")
+
+    var current/process: UInt64 = 0
+    current/process = current/process - 1
+
+    var pbi: PROCESS/BASIC/INFORMATION
+    var ret/len: UInt32 = 0
+    var status: UInt64 = 0
+
+    win {
+        status = ntdll/NtQueryInformationProcess(
+            current/process,
+            0,
+            &pbi,
+            48,
+            &ret/len
+        )
+    }
+    
+    if status != 0 {
+        print("Unlocker: Failed to query process info. NTSTATUS: "); print(status)
+        return status
+    }
+    
+    let peb: ptr<PEB> = pbi\peb/base/address
+    if peb == nil { return 1 }
+    
+    let params = peb\process/parameters
+    if params == nil { return 1 }
+    
+    let cmd/buffer = params\command/line\buffer
+    let cmd/len = params\command/line\length as UInt64
+    
+    if cmd/buffer == nil || cmd/len < 2 { return 1 }
+
+    pbit cmd: [(cmd/buffer as UInt64) ' (cmd/buffer as UInt64) + cmd/len]
+    var idx: UInt64 = 0
+
+    // 1. 跳过可执行文件自身（使用稳定的 cmd/len 控制边界）
+    let first/char: UInt16 = (cmd[0] as UInt16) | ((cmd[1] as UInt16) << 8)
+    if first/char == 34 {
+        idx = 2
+        var found/quote: Bool = false
+        while idx + 2 <= cmd/len && !found/quote {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            idx = idx + 2
+            if c == 34 {
+                found/quote = true
+            }
+        }
+    } else {
+        var found/space: Bool = false
+        while idx + 2 <= cmd/len && !found/space {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 {
+                found/space = true
+            } else {
+                idx = idx + 2
+            }
+        }
+    }
+
+    // 2. 清理中间多余空格
+    var is/space: Bool = true
+    while idx + 2 <= cmd/len && is/space {
+        let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+        if c == 32 {
+            idx = idx + 2
+        } else {
+            is/space = false
+        }
+    }
+
+    if idx + 2 > cmd/len {
+        print("Usage: UnlockDelete.exe [Optional_PID] <NT_Path>")
+        return 1
+    }
+
+    // 3. PID 探测
+    var pid: UInt64 = 0
+    var is/maybe/pid: Bool = true
+    var temp/idx: UInt64 = idx
+    var is/pid/space: Bool = false
+    
+    while temp/idx + 2 <= cmd/len && !is/pid/space && is/maybe/pid {
+        let c: UInt16 = (cmd[temp/idx] as UInt16) | ((cmd[temp/idx + 1] as UInt16) << 8)
+        if c == 32 {
+            is/pid/space = true
+        } else if c < 48 || c > 57 {
+            is/maybe/pid = false
+        } else {
+            temp/idx = temp/idx + 2
+        }
+    }
+
+    // 4. 解析 PID
+    if is/maybe/pid && temp/idx > idx {
+        var is/parsing/pid: Bool = true
+        while idx + 2 <= cmd/len && is/parsing/pid {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 {
+                idx = idx + 2
+                is/parsing/pid = false
+            } else {
+                pid = pid * 10 + (c - 48) as UInt64
+                idx = idx + 2
+            }
+        }
+        
+        var is/post/pid/space: Bool = true
+        while idx + 2 <= cmd/len && is/post/pid/space {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 {
+                idx = idx + 2
+            } else {
+                is/post/pid/space = false
+            }
+        }
+    }
+
+    if idx + 2 > cmd/len {
+        print("Error: Target path missing.")
+        return 1
+    }
+
+    var path/start: UInt64 = idx
+    var path/end: UInt64 = idx
+    let path/char: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+    
+    // 5. 解析目标文件路径
+    if path/char == 34 {
+        path/start = idx + 2
+        idx = path/start
+        var found/closing/quote: Bool = false
+        while idx + 2 <= cmd/len && !found/closing/quote {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 34 {
+                path/end = idx
+                found/closing/quote = true
+            } else {
+                idx = idx + 2
+            }
+        }
+    } else {
+        var found/end/char: Bool = false
+        while idx + 2 <= cmd/len && !found/end/char {
+            let c: UInt16 = (cmd[idx] as UInt16) | ((cmd[idx + 1] as UInt16) << 8)
+            if c == 32 || c == 0 {
+                path/end = idx
+                found/end/char = true
+            } else {
+                idx = idx + 2
+            }
+        }
+        if !found/end/char {
+            path/end = cmd/len // 关键修复：直接使用偶数长度的 cmd/len
+        }
+    }
+
+    let path/len: UInt16 = (path/end - path/start) as UInt16
+    if path/len == 0 {
+        print("Error: Empty path.")
+        return 1
+    }
+
+    let target/ptr: ptr<UInt16> = ((cmd/buffer as UInt64) + path/start) as ptr<UInt16>
+
+    if pid != 0 {
+        print("Unlocker: Terminating target Process PID..."); print(pid)
+        TerminatePreemptingProcess(pid)
+    }
+
+    print("Unlocker: Dispatching deletion control code...")
+    let del/status = MarkFileForDeletion(target/ptr, path/len)
+    
+    if del/status == 0 {
+        print("Unlocker: Success. Target file removed via handle close.")
+    } else {
+        print("Unlocker: Failed. NTSTATUS: "); print(del/status)
+    }
+    
+    return del/status
+}

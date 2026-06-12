@@ -5,7 +5,6 @@
 *.a
 *.so
 *.elf
-*.exe
 *.dll
 
 # Compiler outputs

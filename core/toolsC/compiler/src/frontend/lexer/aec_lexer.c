@@ -259,7 +259,7 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
         else if (c == '"') {
             /* Look ahead to see if it's a closed string or standalone quote */
             int is_standalone = 1;
-            int look_pos = lexer->pos + 1;
+            size_t look_pos = lexer->pos + 1;
             while (look_pos < lexer->length && lexer->input[look_pos] != '\n') {
                 if (lexer->input[look_pos] == '"') {
                     is_standalone = 0;
@@ -275,19 +275,48 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
             }
             
             advance(lexer);
-            int start = lexer->pos;
+            size_t start = lexer->pos;
             
             while (current_char(lexer) && current_char(lexer) != '"') {
-                if (current_char(lexer) == '\\') {
+                if (current_char(lexer) == '&' && peek_char(lexer, 1) == '^') {
+                    advance(lexer);
                     advance(lexer);
                 }
                 advance(lexer);
             }
             
-            int len = lexer->pos - start;
+            size_t len = lexer->pos - start;
             char *str = malloc(len + 1);
-            strncpy(str, &lexer->input[start], len);
-            str[len] = '\0';
+            
+            /* 在内存拷贝时执行物理反转义 (Unescaping) */
+            size_t src_idx = start;
+            size_t dest_idx = 0;
+            while (src_idx < lexer->pos) {
+                if (lexer->input[src_idx] == '&' && src_idx + 1 < lexer->pos && lexer->input[src_idx + 1] == '^') {
+                    if (src_idx + 2 < lexer->pos) {
+                        char esc = lexer->input[src_idx + 2];
+                        if (esc == 'n') {
+                            str[dest_idx++] = '\n';
+                        } else if (esc == 'r') {
+                            str[dest_idx++] = '\r';
+                        } else if (esc == 't') {
+                            str[dest_idx++] = '\t';
+                        } else if (esc == 's') {
+                            str[dest_idx++] = ' ';
+                        } else {
+                            str[dest_idx++] = esc;  /* 例如：&^" 转换为物理 0x22 (双引号) */
+                        }
+                        src_idx += 3;
+                    } else {
+                        str[dest_idx++] = '&';
+                        str[dest_idx++] = '^';
+                        src_idx += 2;
+                    }
+                } else {
+                    str[dest_idx++] = lexer->input[src_idx++];
+                }
+            }
+            str[dest_idx] = '\0';
             
             add_token(lexer, TK_STRING, str);
             free(str);
@@ -295,22 +324,21 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
             if (current_char(lexer) == '"') advance(lexer);
         }
         else if (c == '\'') {
-            int is_char = 0;
-            if (lexer->pos + 2 < lexer->length && lexer->input[lexer->pos + 1] != '\\' && lexer->input[lexer->pos + 2] == '\'') is_char = 1;
-            if (lexer->pos + 3 < lexer->length && lexer->input[lexer->pos + 1] == '\\' && lexer->input[lexer->pos + 3] == '\'') is_char = 1;
-            
-            if (is_char) {
-                /* 单引号字符串 'char' */
-                advance(lexer);
-                int start = lexer->pos;
+            if (next == '\'') {
+                /* 双单引号原始字符串: ''abc''
+                   内部所有字符（包括双引号、反斜杠等）全部作为字面量直接输出，无需任何转义 */
+                advance(lexer); // 消耗第一个 '
+                advance(lexer); // 消耗第二个 '
+                size_t start = lexer->pos;
                 
-                while (current_char(lexer) && current_char(lexer) != '\'') {
-                    if (current_char(lexer) == '\\') {
-                        advance(lexer);
+                while (current_char(lexer)) {
+                    if (current_char(lexer) == '\'' && peek_char(lexer, 1) == '\'') {
+                        break;
                     }
                     advance(lexer);
                 }
-            int len = lexer->pos - start;
+                
+                size_t len = lexer->pos - start;
                 char *str = malloc(len + 1);
                 strncpy(str, &lexer->input[start], len);
                 str[len] = '\0';
@@ -319,11 +347,76 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
                 free(str);
                 
                 if (current_char(lexer) == '\'') advance(lexer);
-                } else {
-                    advance(lexer);
-                    add_token(lexer, TK_TICK, "'");
-                }
+                if (current_char(lexer) == '\'') advance(lexer);
+                continue;
             }
+
+            /* 降级回落：正常的单字符字面量或 Tick 逻辑 */
+            int is_char = 0;
+            if (lexer->pos + 2 < lexer->length && lexer->input[lexer->pos + 2] == '\'') {
+                is_char = 1;
+            } else if (lexer->pos + 4 < lexer->length &&
+                       lexer->input[lexer->pos + 1] == '&' &&
+                       lexer->input[lexer->pos + 2] == '^' &&
+                       lexer->input[lexer->pos + 4] == '\'') {
+                is_char = 1;
+            }
+            
+            if (is_char) {
+                /* 单引号字符串 'char' */
+                advance(lexer);
+                size_t start = lexer->pos;
+                
+                while (current_char(lexer) && current_char(lexer) != '\'') {
+                    if (current_char(lexer) == '&' && peek_char(lexer, 1) == '^') {
+                        advance(lexer);
+                        advance(lexer);
+                    }
+                    advance(lexer);
+                }
+                
+                size_t len = lexer->pos - start;
+                char *str = malloc(len + 1);
+                
+                /* 反转义 */
+                size_t src_idx = start;
+                size_t dest_idx = 0;
+                while (src_idx < lexer->pos) {
+                    if (lexer->input[src_idx] == '&' && src_idx + 1 < lexer->pos && lexer->input[src_idx + 1] == '^') {
+                        if (src_idx + 2 < lexer->pos) {
+                            char esc = lexer->input[src_idx + 2];
+                            if (esc == 'n') {
+                                str[dest_idx++] = '\n';
+                            } else if (esc == 'r') {
+                                str[dest_idx++] = '\r';
+                            } else if (esc == 't') {
+                                str[dest_idx++] = '\t';
+                            } else if (esc == 's') {
+                                str[dest_idx++] = ' ';
+                            } else {
+                                str[dest_idx++] = esc;
+                            }
+                            src_idx += 3;
+                        } else {
+                            str[dest_idx++] = '&';
+                            str[dest_idx++] = '^';
+                            src_idx += 2;
+                        }
+                    } else {
+                        str[dest_idx++] = lexer->input[src_idx++];
+                    }
+                }
+                str[dest_idx] = '\0';
+                
+                add_token(lexer, TK_STRING, str);
+                free(str);
+                
+                if (current_char(lexer) == '\'') advance(lexer);
+            } else {
+                advance(lexer);
+                add_token(lexer, TK_TICK, "'");
+            }
+        }
         else if (isalpha(c) || c == '_') {
             int start = lexer->pos;
             
@@ -338,7 +431,7 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
             ident[len] = '\0';
             
             /* [任务实现-04] 检测标识符中的下划线罢工 */
-            if (strike_detect_underscore_identifier(ident, lexer->line, 
+            if (strike_detect_underscore_identifier(ident, lexer->line,
                                                      lexer->column)) {
                 free(ident);
                 exit(COMPILER_STRIKE_CODE);
@@ -349,8 +442,6 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
                 free(ident);
                 exit(COMPILER_STRIKE_CODE);
             }
-            
-
             
             TokenType type = check_keyword(ident);
             add_token(lexer, type, ident);
@@ -575,7 +666,7 @@ static Token* lexer_scan_tokens(Lexer *lexer) {
         }
         else if (c == '\n') {
             advance(lexer);
-            add_token(lexer, TK_NEWLINE, "\\n");
+            add_token(lexer, TK_NEWLINE, "&^n");
         }
         else {
             advance(lexer);
