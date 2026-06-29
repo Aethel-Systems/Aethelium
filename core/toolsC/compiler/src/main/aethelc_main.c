@@ -52,6 +52,7 @@
 #include "aec_parser.h"
 #include "semantic_checker.h"
 #include "../frontend/import_resolver.h"
+#include "../frontend/aecf_parser.h"
 #include <libgen.h>
 #include "aec_codegen.h"
 #include "let_gen.h"
@@ -728,6 +729,7 @@ typedef struct {
     /* Mach-O 及 IM4P 支持 */
     uint64_t macho_phys_base;   /* --base <addr>: Mach-O 物理基址 (default: 0x800000000) */
     const char *im4p_identifier; /* --is im4p <name>: IM4P 标识符名称 (default: "krnl") */
+    const char *config_file;     /* --config 或 /config */
 } CompilerOptions;
 
 static int compiler_append_input_file(CompilerOptions *opts, char *path) {
@@ -940,7 +942,7 @@ static int parse_rom_size_bytes(const char *text, uint64_t *out_bytes) {
 
 static void print_usage(const char *prog) {
 #ifdef _WIN32
-    fprintf(stderr, "AethelOS Bootstrap Compiler (Stage 1) v2.0.0\n");
+    fprintf(stderr, "Aethelium Compiler\n");
     fprintf(stderr, "Usage:\n");
     fprintf(stderr, "  Compile: %s <input.ae> /o:<output> [options]\n", prog);
     fprintf(stderr, "  Verify:  %s /verify-let-contract:<input.let>\n", prog);
@@ -984,11 +986,15 @@ static void print_usage(const char *prog) {
     fprintf(stderr, "  /optimize:<lvl>     Same as /O\n");
     fprintf(stderr, "  /v                  Verbose output\n");
     fprintf(stderr, "  /entry:<sym>        Set entry point symbol (link mode only)\n");
+    fprintf(stderr, "\nProject Configuration:\n");
+    fprintf(stderr, "  /config [file]      Use AECF configuration file (default: config.aecf)\n");
     fprintf(stderr, "\nExamples:\n");
     fprintf(stderr, "  Compile to EXE:\n");
     fprintf(stderr, "    aethelc app.ae /o:app.exe /emit:exe /lib:GUI\\aura\n");
+    fprintf(stderr, "  Compile from AECF:\n");
+    fprintf(stderr, "    aethelc /config\n");
 #else
-    fprintf(stderr, "AethelOS Bootstrap Compiler (Stage 1) v2.0.0\n");
+    fprintf(stderr, "Aethelium Compiler\n");
     fprintf(stderr, "Usage:\n");
     fprintf(stderr, "  Compile: %s <input.ae> -o <output> [options]\n", prog);
     fprintf(stderr, "  Verify:  %s --verify-let-contract <input.let>\n", prog);
@@ -1172,6 +1178,14 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             opts->bin_flat = 1;
         } else if (strcmp(argv[i], "/bin-with-map") == 0) {
             opts->bin_with_map = 1;
+        } else if (strcmp(argv[i], "/config") == 0 || strcmp(argv[i], "--config") == 0) {
+            if (i + 1 < argc && argv[i+1][0] != '/' && argv[i+1][0] != '-') {
+                opts->config_file = argv[++i];
+            } else {
+                opts->config_file = "config.aecf";
+            }
+        } else if (strncmp(argv[i], "/config:", 8) == 0) {
+            opts->config_file = argv[i] + 8;
         } else if (strncmp(argv[i], "/target:", 8) == 0) {
             opts->target_mode = argv[i] + 8;
         } else if (strcmp(argv[i], "/freestanding") == 0) {
@@ -1324,6 +1338,12 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
             opts->bin_flat = 1;
         } else if (strcmp(argv[i], "--bin-with-map") == 0) {
             opts->bin_with_map = 1;
+        } else if (strcmp(argv[i], "--config") == 0 || strcmp(argv[i], "-c") == 0) {
+            if (i + 1 < argc && argv[i+1][0] != '-') {
+                opts->config_file = argv[++i];
+            } else {
+                opts->config_file = "config.aecf";
+            }
         } else if (strcmp(argv[i], "--target") == 0) {
             if (i + 1 < argc) {
                 const char *target = argv[++i];
@@ -2788,12 +2808,96 @@ int main(int argc, char **argv) {
         return 1;
     }
 
+    AecfConfig aecf;
+    int aecf_loaded = 0;
+    
+    if (opts.config_file) {
+        aecf_config_init(&aecf);
+        if (aecf_parse_file(opts.config_file, &aecf) == 0) {
+            aecf_loaded = 1;
+            /* 智能覆盖层：将 AECF 配置熔接至 CompilerOptions */
+            if (aecf.target_format && !opts.emit_format) {
+                opts.output_format = aecf.target_format;
+                opts.emit_format = aecf.target_format;
+            }
+            if (aecf.output_file && strcmp(opts.output_file, "a.out") == 0) {
+                opts.output_file = aecf.output_file;
+            }
+            if (aecf.isa && strcmp(opts.isa, "x86") == 0) {
+                opts.isa = aecf.isa;
+            }
+            if (aecf.machine_bits > 0) {
+                opts.machine_bits = aecf.machine_bits;
+            }
+            if (aecf.mode && strcmp(opts.mode, "sandbox") == 0) {
+                opts.mode = aecf.mode;
+            }
+            if (aecf.opt_level >= 0) {
+                opts.optimize_level = aecf.opt_level;
+            }
+            if (aecf.bin_flat) opts.bin_flat = aecf.bin_flat;
+            if (aecf.freestanding) opts.freestanding = aecf.freestanding;
+            if (aecf.rom_mode) {
+                opts.rom_mode = 1;
+                opts.output_format = "rom";
+                opts.emit_format = "rom";
+            }
+            
+            for (int i = 0; i < aecf.input_count; i++) {
+                if (opts.input_count < MAX_INPUT_FILES) {
+                    opts.input_files[opts.input_count++] = aecf.input_files[i];
+                }
+            }
+            
+            /* AELibrary 自动化装配装甲 */
+            if (aecf.use_lib) {
+                const char *lib_env = getenv("AELibraryPATH");
+                if (!lib_env || lib_env[0] == '\0') {
+                    lib_env = getenv("AELibraryPath");
+                }
+                
+                if (!lib_env || lib_env[0] == '\0') {
+                    fprintf(stderr, "[AECF] AELibraryPATH not found in env. Initializing Auto-Fetcher...\n");
+                    int ret = system("git clone https://github.com/Aethel-Systems/AELibrary.git .aelibrary");
+                    if (ret == 0) {
+#ifdef _WIN32
+                        _putenv("AELibraryPATH=.aelibrary");
+#else
+                        setenv("AELibraryPATH", ".aelibrary", 1);
+#endif
+                        fprintf(stderr, "[AECF] Successfully securely cloned AELibrary to Local Context '.aelibrary'\n");
+                    } else {
+                        fprintf(stderr, "[FATAL] Failed to fetch AELibrary payload. Verify network capability or manually export AELibraryPATH.\n");
+                        aecf_config_destroy(&aecf);
+                        return 1;
+                    }
+                }
+                
+                if (aecf.lib_model && opts.include_lib_count < 32) {
+                    append_env_library_path(&opts, aecf.lib_model);
+                }
+            }
+            
+            if (opts.verbose) {
+                fprintf(stderr, "[AECF] Master Configuration Matrix applied successfully from %s\n", opts.config_file);
+            }
+        } else {
+            fprintf(stderr, "[FATAL] Failure parsing Configuration Manifest: %s\n", opts.config_file);
+            aecf_config_destroy(&aecf);
+            return 1;
+        }
+    }
+
     if (opts.verify_let_mode) {
-        return let_verify_contract(opts.verify_let_file, opts.verbose) == 0 ? 0 : 1;
+        int ret = let_verify_contract(opts.verify_let_file, opts.verbose) == 0 ? 0 : 1;
+        if (aecf_loaded) aecf_config_destroy(&aecf);
+        return ret;
     }
 
     if (opts.dump_reloc_mode) {
-        return let_dump_reloc_dna(opts.dump_reloc_file, opts.dump_reloc_output) == 0 ? 0 : 1;
+        int ret = let_dump_reloc_dna(opts.dump_reloc_file, opts.dump_reloc_output) == 0 ? 0 : 1;
+        if (aecf_loaded) aecf_config_destroy(&aecf);
+        return ret;
     }
     
     if (opts.is_iso_mode) {
@@ -2809,5 +2913,9 @@ int main(int argc, char **argv) {
                                       opts.output_file, opts.iso_size_mb);
     }
     
-    return run_compiler(&opts);
+    int rc = run_compiler(&opts);
+    if (aecf_loaded) {
+        aecf_config_destroy(&aecf);
+    }
+    return rc;
 }
