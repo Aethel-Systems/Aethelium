@@ -1093,6 +1093,7 @@ static int parse_args(int argc, char **argv, CompilerOptions *opts) {
     memset(opts->include_libs, 0, sizeof(opts->include_libs));
     opts->macho_phys_base = 0x800000000ULL;
     opts->im4p_identifier = "krnl";
+    opts->config_file = NULL; // [新增此行] 显式初始化为 NULL
     
     for (int i = 1; i < argc; i++) {
 #ifdef _WIN32
@@ -2802,8 +2803,8 @@ static int run_compiler(CompilerOptions *opts) {
 }
 
 int main(int argc, char **argv) {
-    CompilerOptions opts;
-    
+    CompilerOptions opts = {0}; // [修改后] 安全地初始化全部字段为0或NULL
+
     if (parse_args(argc, argv, &opts) != 0) {
         return 1;
     }
