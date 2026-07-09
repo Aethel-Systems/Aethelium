@@ -161,6 +161,20 @@ subprocess.Popen("notepad.exe")
 
 ---
 
+## ❤️ 特别感谢
+
+感谢以下朋友在 Aethelium 早期阶段给予的支持：
+
+- **[@gravermistakes](https://github.com/gravermistakes)** —— 早期 Star 与关注
+
+- **[@SherlockH0olms](https://github.com/SherlockH0olms)** —— 早期 Star 与支持
+
+虽然 star 已经过去了一段时间，但我一直记得你们的支持，这对还在持续开发的我来说意义重大。非常感谢！🙏
+
+如果你们有任何使用反馈、建议或想交流系统编程相关的话题，随时欢迎提 Issue 或 PR。
+
+---
+
 ## 📄 许可证 (License)
 
 本项目采用 **GNU General Public License v3.0 (GPLv3)** 开源协议。

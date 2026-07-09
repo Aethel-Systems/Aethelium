@@ -160,6 +160,20 @@ To get started quickly with different compilation targets, detailed technical do
 
 ---
 
+## ❤️ Special Thanks
+
+I would like to thank the following individuals for their support during the early stages of Aethelium:
+
+- **[@gravermistakes](https://github.com/gravermistakes)** — Early star and follow
+
+- **[@SherlockH0olms](https://github.com/SherlockH0olms)** — Early star and support
+
+Although some time has passed since those stars were given, I still remember your support; it means a great deal to me as I continue development. Thank you very much! 🙏
+
+If you have any feedback, suggestions, or wish to discuss topics related to systems programming, please feel free to open an issue or submit a PR.
+
+---
+
 ## 📄 License
 
 This project is licensed under the **GNU General Public License v3.0 (GPLv3)**.
