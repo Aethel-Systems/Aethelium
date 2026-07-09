@@ -1798,6 +1798,8 @@ typedef struct {
     int target_format;
     int current_func_is_efi;
     int32_t uefi_system_table_offset;
+    /* === 新增：支持 break 的最内层循环退出 label === */
+    int break_label;
 } McCtx;
 /* ---------------- 替换结束 ---------------- */
 
@@ -6763,16 +6765,35 @@ static int mc_emit_stmt_a64(McCtx *ctx, ASTNode *stmt) {
             if (mc_bind_label(ctx, l_else) != 0) return -1;
             if (stmt->data.if_stmt.else_branch && mc_emit_stmt(ctx, stmt->data.if_stmt.else_branch) != 0) return -1;
             return mc_bind_label(ctx, l_end);
-        case AST_WHILE_STMT:
+        /* === 1. 重构 AArch64 WHILE 循环（加入嵌套安全 break_label 跟踪） === */
+        case AST_WHILE_STMT: {
+            int saved_break = ctx->break_label; /* 保存外层循环的目标 */
             l_loop = mc_new_label(ctx);
             l_break = mc_new_label(ctx);
             if (l_loop < 0 || l_break < 0) return -1;
-            if (mc_bind_label(ctx, l_loop) != 0) return -1;
-            if (mc_emit_expr(ctx, stmt->data.while_stmt.condition) != 0) return -1;
-            if (mc_emit_jz_label(ctx, l_break) != 0) return -1;
-            if (mc_emit_stmt(ctx, stmt->data.while_stmt.body) != 0) return -1;
-            if (mc_emit_jmp_label(ctx, l_loop) != 0) return -1;
-            return mc_bind_label(ctx, l_break);
+            
+            ctx->break_label = l_break; /* 绑定本层循环的目标跳出点 */
+
+            if (mc_bind_label(ctx, l_loop) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_expr(ctx, stmt->data.while_stmt.condition) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_jz_label(ctx, l_break) != 0) { ctx->break_label = saved_break; return -1; }
+            
+            /* 编译循环体：此时内部若有 break，将直接访问 ctx->break_label 发射 B 指令 */
+            if (mc_emit_stmt(ctx, stmt->data.while_stmt.body) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_jmp_label(ctx, l_loop) != 0) { ctx->break_label = saved_break; return -1; }
+            
+            int ret = mc_bind_label(ctx, l_break);
+            ctx->break_label = saved_break; /* 恢复原有的外层循环退出点 */
+            return ret;
+        }
+
+        /* === 2. 新增：支持 AArch64 编译 BREAK 语句 === */
+        case AST_BREAK_STMT:
+            if (ctx->break_label >= 0) {
+                /* AArch64 模式下 mc_emit_jmp_label 会自动生成 b 指令并追加 Relocation */
+                return mc_emit_jmp_label(ctx, ctx->break_label);
+            }
+            return 0;
         case AST_HW_BLOCK: {
             int saved = ctx->in_hardware_block;
             ctx->in_hardware_block = 1;
@@ -8246,18 +8267,37 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
             if (mc_bind_label(ctx, l_else) != 0) return -1;
             if (stmt->data.if_stmt.else_branch && mc_emit_stmt(ctx, stmt->data.if_stmt.else_branch) != 0) return -1;
             return mc_bind_label(ctx, l_end);
-        case AST_WHILE_STMT:
+        /* === 1. 重构 WHILE 循环的代码生成（加入嵌套安全 break_label 跟踪） === */
+        case AST_WHILE_STMT: {
+            int saved_break = ctx->break_label; /* 保存上一层循环的退出目标（支持嵌套） */
             l_loop = mc_new_label(ctx);
             l_break = mc_new_label(ctx);
             if (l_loop < 0 || l_break < 0) return -1;
-            if (mc_bind_label(ctx, l_loop) != 0) return -1;
-            if (mc_emit_expr(ctx, stmt->data.while_stmt.condition) != 0) return -1;
-            if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
-            if (mc_emit_u8(&ctx->code, 0x85) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
-            if (mc_emit_jz_label(ctx, l_break) != 0) return -1;
-            if (mc_emit_stmt(ctx, stmt->data.while_stmt.body) != 0) return -1;
-            if (mc_emit_jmp_label(ctx, l_loop) != 0) return -1;
-            return mc_bind_label(ctx, l_break);
+            
+            ctx->break_label = l_break; /* 绑定本层循环的目标跳出点 */
+
+            if (mc_bind_label(ctx, l_loop) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_expr(ctx, stmt->data.while_stmt.condition) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_is_x64(ctx) && mc_emit_u8(&ctx->code, 0x48) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_u8(&ctx->code, 0x85) != 0 || mc_emit_u8(&ctx->code, 0xC0) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_jz_label(ctx, l_break) != 0) { ctx->break_label = saved_break; return -1; }
+            
+            /* 编译循环体：此时内部若有 break，将直接访问 ctx->break_label 发射跳转 */
+            if (mc_emit_stmt(ctx, stmt->data.while_stmt.body) != 0) { ctx->break_label = saved_break; return -1; }
+            if (mc_emit_jmp_label(ctx, l_loop) != 0) { ctx->break_label = saved_break; return -1; }
+            
+            int ret = mc_bind_label(ctx, l_break);
+            ctx->break_label = saved_break; /* 恢复原有的外层循环退出点 */
+            return ret;
+        }
+
+        /* === 2. 新增：支持编译 BREAK 语句 === */
+        case AST_BREAK_STMT:
+            if (ctx->break_label >= 0) {
+                /* 发射直接跳转指令至当前最内层循环的 l_break */
+                return mc_emit_jmp_label(ctx, ctx->break_label);
+            }
+            return 0;
         case AST_METAL_BLOCK:
             for (i = 0; i < stmt->data.metal_block.stmt_count; i++) {
                 if (mc_emit_stmt(ctx, stmt->data.metal_block.statements[i]) != 0) return -1;
@@ -9362,6 +9402,9 @@ static void trace_calls(ASTNode *prog, ASTNode *node, int *reachable_flags) {
         case AST_DEFER_STMT:
             trace_calls(prog, node->data.defer_stmt.body, reachable_flags);
             break;
+        /* === 新增：DCE 遍历对 break 节点的兼容 === */
+        case AST_BREAK_STMT:
+            break;
         case AST_GUARD_STMT:
             trace_calls(prog, node->data.guard_stmt.condition, reachable_flags);
             trace_calls(prog, node->data.guard_stmt.binding_expr, reachable_flags);
@@ -9545,6 +9588,9 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
     mc.target_isa = gen->target_isa;
     mc.target_format = gen->target_format;
     mc.current_func_is_efi = 0;
+    
+    /* === 新增：初始化无循环环境 === */
+    mc.break_label = -1;
     
     if (!ast || ast->type != AST_PROGRAM) {
         if (aetb_gen_finalize(aetb) != 0) {
