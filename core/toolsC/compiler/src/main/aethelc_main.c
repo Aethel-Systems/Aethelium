@@ -82,6 +82,7 @@
 #ifdef _WIN32
 #include <io.h>
 #include <fcntl.h>
+#define strcasecmp _stricmp
 #endif
 
 #define MAX_INPUT_FILES 128
@@ -835,6 +836,12 @@ static int append_lib_directory_recursive(CompilerOptions *opts, const char *dir
         size_t base_len;
         size_t name_len;
         if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0) continue;
+        
+        /* [修复]: 一律排除库文件中所有的 examples 目录及 examples 目录内的所有东西 */
+        if (strcasecmp(ent->d_name, "examples") == 0) {
+            continue;
+        }
+
         base_len = strlen(dir_path);
         name_len = strlen(ent->d_name);
         child = (char *)malloc(base_len + name_len + 2);
