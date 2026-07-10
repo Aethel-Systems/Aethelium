@@ -6964,6 +6964,15 @@ static int mc_emit_expr(McCtx *ctx, ASTNode *expr) {
         case AST_REFERENCE: {
             ASTNode *operand = expr->data.reference.operand;
             if (!operand) return mc_emit_mov_acc_imm(ctx, 0);
+            
+            /* === 新增修复：支持对数组下标访问（如 &buf[0]）的物理寻址计算 === */
+            if (operand->type == AST_ACCESS && operand->data.access.member &&
+                strcmp(operand->data.access.member, "[index]") == 0) {
+                if (mc_emit_indexed_address(ctx, operand) == 0) {
+                    return 0; /* 成功将 buf[0] 的绝对地址加载到 RAX */
+                }
+            }
+
             if (operand->type == AST_ACCESS) {
                 const char *field_type = NULL;
                 uint32_t field_size = 0;
@@ -9845,7 +9854,8 @@ int codegen_generate(CodeGenerator *gen, ASTNode *ast) {
         int64_t target_off;
 
         /* 工业级修复：WSYS 内核驱动同属 PE 家族，必须纳入段边界对齐计算，否则会导致 ADR 指令生成出指向垃圾内存区的越界指针，进而触发崩溃 */
-        if (gen->target_format == FORMAT_EXE || gen->target_format == FORMAT_PE || gen->target_format == FORMAT_WSYS) {
+        /* === 新增修复：将标准 UEFI 格式 (4 和 7) 纳入段对齐计算，纠正 RIP 相对寻址 === */
+        if (gen->target_format == FORMAT_EXE || gen->target_format == FORMAT_PE || gen->target_format == FORMAT_WSYS || gen->target_format == 4 || gen->target_format == 7) {
             /* EXE/PE/WSYS format aligns sections to SectionAlignment (usually 0x1000) */
             uint64_t code_aligned = (mc.code.size + 0xFFF) & ~0xFFF;
             uint64_t mirror_aligned = (mirror_state_size > 0) ? ((mirror_state_size + 0xFFF) & ~0xFFF) : 0;

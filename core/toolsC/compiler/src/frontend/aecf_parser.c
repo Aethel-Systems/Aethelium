@@ -16,6 +16,7 @@
  */
 
 #include "aecf_parser.h"
+#include "unix_strike.h" /* 融合罢工检测系统 */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -37,6 +38,24 @@ typedef enum {
     STATE_EXPECT_ANY,
     STATE_EXPECT_VALUE
 } ParserState;
+
+/* AECF 配置文件罢工自毁程序 */
+static void aecf_strike_on_invalid_paradigm(const char *offender, int line, const char *reason, const char *correction) {
+    fprintf(stderr, "\n");
+    fprintf(stderr, "================================================================================\n");
+    fprintf(stderr, "[COMPILER STRIKE] 编译器拒绝工作 (AECF 配置文件违规)\n");
+    fprintf(stderr, "================================================================================\n");
+    fprintf(stderr, "违规类型: AECF 配置文件参数污染\n");
+    fprintf(stderr, "检测位置: 在配置文件第 %d 行\n", line);
+    fprintf(stderr, "违规特征: '%s'\n", offender);
+    fprintf(stderr, "罢工理由: %s\n", reason);
+    fprintf(stderr, "修正方案: %s\n", correction);
+    fprintf(stderr, "================================================================================\n");
+    fprintf(stderr, "返回码: %d\n", COMPILER_STRIKE_CODE);
+    fprintf(stderr, "范式壁垒，从编译器配置开始。\n");
+    fprintf(stderr, "================================================================================\n\n");
+    exit(COMPILER_STRIKE_CODE);
+}
 
 static char *trim_whitespace(char *str) {
     char *end;
@@ -138,8 +157,15 @@ void aecf_config_destroy(AecfConfig *config) {
     free(config->lib_model);
 }
 
-static void process_key_value(SectionType current_section, const char *k, const char *v, AecfConfig *config) {
+static void process_key_value(SectionType current_section, const char *k, const char *v, AecfConfig *config, int line) {
     if (!k || !v) return;
+
+    /* 检查键和值中是否包含下划线，彻底清洗不合规命名 */
+    if (strchr(k, '_') != NULL) {
+        aecf_strike_on_invalid_paradigm(k, line,
+            "Identifiers containing underscores are strictly prohibited in AethelOS.",
+            "Use leaning-tower slash paths (e.g. machine-bits instead of machine_bits).");
+    }
 
     if (current_section == SEC_BASIC) {
         if (strcasecmp(k, "Version") == 0) {
@@ -162,12 +188,11 @@ static void process_key_value(SectionType current_section, const char *k, const 
             config->lib_model = strdup(v);
         }
     } else if (current_section == SEC_EXPAND) {
-        /* Expand parameters outside of a block but within Expand section */
         if (strcasecmp(k, "isa") == 0) config->isa = strdup(v);
-        else if (strcasecmp(k, "machine_bits") == 0) config->machine_bits = atoi(v);
+        else if (strcasecmp(k, "machine/bits") == 0) config->machine_bits = atoi(v);
         else if (strcasecmp(k, "mode") == 0) config->mode = strdup(v);
         else if (strcasecmp(k, "optimize") == 0) config->opt_level = atoi(v);
-        else if (strcasecmp(k, "bin_flat") == 0) config->bin_flat = (strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0);
+        else if (strcasecmp(k, "bin/flat") == 0) config->bin_flat = (strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0);
         else if (strcasecmp(k, "freestanding") == 0) config->freestanding = (strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0);
         else if (strcasecmp(k, "rom") == 0) config->rom_mode = (strcasecmp(v, "true") == 0 || strcmp(v, "1") == 0);
     }
@@ -198,27 +223,32 @@ int aecf_parse_file(const char *filename, AecfConfig *config) {
         char *tline = trim_whitespace(line);
         if (tline[0] == '\0') continue;
 
+        /* 检测 Unix 相对路径与黑名单符号污染 */
+        if (strike_detect_path_literals(tline)) {
+            aecf_strike_on_invalid_paradigm(tline, line_num,
+                "Unix-style relative paths (../, ./) are prohibited in configuration matrices.",
+                "Use AethelOS standard routing (>: or >|-) instead.");
+        }
+
         /* 处理等待多行 Value 的状态 */
         if (state == STATE_EXPECT_VALUE) {
             char *v = extract_bracketed_value(tline);
             if (v && v[0] != '\0') {
-                process_key_value(current_section, pending_key, v, config);
+                process_key_value(current_section, pending_key, v, config, line_num);
                 state = STATE_EXPECT_ANY;
                 pending_key[0] = '\0';
                 continue;
             } else if (tline[0] == '>' || tline[0] == '}') {
-                /* 如果在此处遇到新的 section 或 block 闭合，说明上一个 key 是无值的悬空 key */
                 state = STATE_EXPECT_ANY;
                 pending_key[0] = '\0';
-                /* 回退并继续执行正常的区段和块解析逻辑 */
             } else {
-                /* 如果仍然是空行或无效字符则继续读取（已由开头的 tline[0]=='\0' 拦截过） */
                 continue;
             }
         }
 
-        /* 识别 Section: > [SectionName] : \target */
-        if (tline[0] == '>') {
+        /* 识别 Section: > [SectionName] : \target
+         * [关键修正]：必须验证 tline[1] 不是 ':' 或 '|'，防止将 Aethel 相对/物理路径误判为区段头部 */
+        if (tline[0] == '>' && tline[1] != ':' && tline[1] != '|') {
             char *colon = strchr(tline, ':');
             char sec_name[128] = {0};
 
@@ -228,7 +258,7 @@ int aecf_parse_file(const char *filename, AecfConfig *config) {
                 if (s) strncpy(sec_name, s, sizeof(sec_name) - 1);
                 
                 char *target = trim_whitespace(colon + 1);
-                if (target && target[0] == '\\') target++; /* 剔除可能的反斜杠 */
+                if (target && target[0] == '\\') target++; /* 剔除反斜杠 */
                 if (target && target[0] != '\0') {
                     config->target_format = strdup(target);
                 }
@@ -291,7 +321,7 @@ int aecf_parse_file(const char *filename, AecfConfig *config) {
                     char *k = trim_whitespace(tline);
                     char *v = extract_bracketed_value(trim_whitespace(colon + 1));
                     if (v && v[0] != '\0') {
-                        process_key_value(SEC_EXPAND, k, v, config);
+                        process_key_value(SEC_EXPAND, k, v, config, line_num);
                     } else {
                         /* 如果值跨行，在此处拦截并转移状态 */
                         strncpy(pending_key, k, sizeof(pending_key) - 1);
@@ -310,13 +340,13 @@ int aecf_parse_file(const char *filename, AecfConfig *config) {
             char *v_raw = trim_whitespace(colon + 1);
 
             if (v_raw[0] == '\0') {
-                /* 跨行值：Key: \n [Value] */
+                /* 跨行值 */
                 strncpy(pending_key, k, sizeof(pending_key) - 1);
                 state = STATE_EXPECT_VALUE;
             } else {
-                /* 单行值：Key: [Value] */
+                /* 单行值 */
                 char *v = extract_bracketed_value(v_raw);
-                process_key_value(current_section, k, v, config);
+                process_key_value(current_section, k, v, config, line_num);
             }
         }
     }
