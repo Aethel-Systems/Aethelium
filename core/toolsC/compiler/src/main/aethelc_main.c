@@ -2866,14 +2866,14 @@ int main(int argc, char **argv) {
                 
                 if (!lib_env || lib_env[0] == '\0') {
                     fprintf(stderr, "[AECF] AELibraryPATH not found in env. Initializing Auto-Fetcher...\n");
-                    int ret = system("git clone https://github.com/Aethel-Systems/AELibrary.git .aelibrary");
+                    int ret = system("git clone https://github.com/Aethel-Systems/AELibrary.git !aelibrary");
                     if (ret == 0) {
 #ifdef _WIN32
-                        _putenv("AELibraryPATH=.aelibrary");
+                        _putenv("AELibraryPATH=!aelibrary");
 #else
-                        setenv("AELibraryPATH", ".aelibrary", 1);
+                        setenv("AELibraryPATH", "!aelibrary", 1);
 #endif
-                        fprintf(stderr, "[AECF] Successfully securely cloned AELibrary to Local Context '.aelibrary'\n");
+                        fprintf(stderr, "[AECF] Successfully securely cloned AELibrary to Local Context '!aelibrary'\n");
                     } else {
                         fprintf(stderr, "[FATAL] Failed to fetch AELibrary payload. Verify network capability or manually export AELibraryPATH.\n");
                         aecf_config_destroy(&aecf);

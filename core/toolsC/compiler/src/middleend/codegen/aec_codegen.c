@@ -5972,6 +5972,175 @@ static int mc_emit_hw_isa_param_call(McCtx *ctx,
     uint64_t imm2 = 0;
     if (!ctx || !op) return -1;
 
+    /* =================================================================
+     * AethelOS 工业级原子操作扩展
+     * 为 TL-PFR 无锁储蓄池、SRBM 多核超块竞争、APGP CAS 子树替换
+     * 提供硬件级原子指令生成。操作数约定：
+     *   操作数0 = 内存地址（计算后存入 RDX 作为基址）
+     *   操作数1 = 期望值/新值（计算后存入 RAX 作为累加器）
+     * 所有指令遵循 x86-64 LOCK 前缀语义，保证多核缓存一致性。
+     * ================================================================= */
+
+    /* LOCK CMPXCHG [rdx], rax: F0 48 0F B1 02
+     * 原子比较交换：若 [RDX]==RAX 则 ZF=1 并写入 RDX 指向内存，
+     * 否则 ZF=0 且 RAX 被加载为内存当前值。
+     * TL-PFR 无锁环形缓冲区入队/出队的核心原语。 */
+    if (strcmp(op, "lockcmpxchg") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        /* 计算期望值到 RAX（CMPXCHG 的隐含比较寄存器） */
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        /* 将 RAX 暂存到 R8（保护期望值，因为计算地址可能污染 RAX） */
+        if (mc_emit_u8(&ctx->code, 0x49) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1; /* MOV */
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* r8, rax */
+        /* 计算内存地址到 RAX */
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        /* RDX = RAX（地址） */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, rax */
+        /* RAX = R8（恢复期望值） */
+        if (mc_emit_u8(&ctx->code, 0x4C) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1; /* mov rax, r8 */
+        /* LOCK CMPXCHG [rdx], rax */
+        if (mc_emit_u8(&ctx->code, 0xF0) != 0) return -1; /* LOCK prefix */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xB1) != 0) return -1; /* CMPXCHG */
+        if (mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* ModRM: [rdx], rax */
+        return 0;
+    }
+
+    /* LOCK XADD [rdx], rax: F0 48 0F C1 02
+     * 原子交换加：RAX = [RDX]，然后 [RDX] = 原[RAX] + RAX。
+     * 用于原子计数器递增（如 PDN 引用计数、超块分配计数）。 */
+    if (strcmp(op, "lockxadd") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        /* 计算增量值到 RAX */
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        /* R8 = RAX（保护增量值） */
+        if (mc_emit_u8(&ctx->code, 0x49) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        /* 计算内存地址到 RDX */
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, rax */
+        /* RAX = R8（恢复增量值） */
+        if (mc_emit_u8(&ctx->code, 0x4C) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        /* LOCK XADD [rdx], rax */
+        if (mc_emit_u8(&ctx->code, 0xF0) != 0) return -1; /* LOCK prefix */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC1) != 0) return -1; /* XADD */
+        if (mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* ModRM: [rdx], rax */
+        return 0;
+    }
+
+    /* LOCK BTS [rdx], rax: F0 48 0F AB 02
+     * 原子测试并置位：将 [RDX] 中由 RAX 指定的位复制到 CF，然后置该位为1。
+     * 用于 SRBM 超块位图的多核安全置位（无锁帧分配）。 */
+    if (strcmp(op, "lockbts") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        /* 计算位偏移到 RAX */
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        /* R8 = RAX（保护位偏移） */
+        if (mc_emit_u8(&ctx->code, 0x49) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        /* 计算内存地址到 RDX */
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC2) != 0) return -1; /* mov rdx, rax */
+        /* RAX = R8（恢复位偏移） */
+        if (mc_emit_u8(&ctx->code, 0x4C) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        /* LOCK BTS [rdx], rax */
+        if (mc_emit_u8(&ctx->code, 0xF0) != 0) return -1; /* LOCK prefix */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xAB) != 0) return -1; /* BTS */
+        if (mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* ModRM: [rdx], rax */
+        return 0;
+    }
+
+    /* LOCK BTR [rdx], rax: F0 48 0F B3 02
+     * 原子测试并清位：将 [RDX] 中由 RAX 指定的位复制到 CF，然后清该位为0。
+     * 用于 SRBM 超块位图的多核安全清位（无锁帧释放）。 */
+    if (strcmp(op, "lockbtr") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x49) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC2) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x4C) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xF0) != 0) return -1; /* LOCK prefix */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xB3) != 0) return -1; /* BTR */
+        if (mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* ModRM: [rdx], rax */
+        return 0;
+    }
+
+    /* LOCK XCHG [rdx], rax: F0 48 87 02
+     * 原子交换：RAX 与 [RDX] 内容互换。
+     * 用于无锁队列的头尾指针原子更新。 */
+    if (strcmp(op, "lockxchg") == 0) {
+        if (operand_count != 2 || !operands || !operands[0] || !operands[1]) return -1;
+        if (mc_emit_expr(ctx, operands[1]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x49) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC2) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x4C) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x89) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xC0) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0xF0) != 0) return -1; /* LOCK prefix */
+        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+        if (mc_emit_u8(&ctx->code, 0x87) != 0) return -1; /* XCHG */
+        if (mc_emit_u8(&ctx->code, 0x02) != 0) return -1; /* ModRM: [rdx], rax */
+        return 0;
+    }
+    
+    /* =================================================================
+     * INVLPG [rax]: 0F 01 38
+     * 工业级单页 TLB 刷新：计算目标虚拟地址到 RAX 后，发射 invlpg [rax] 机器码
+     * ================================================================= */
+    if (strcmp(op, "invlpg") == 0) {
+        if (operand_count != 1 || !operands || !operands[0]) return -1;
+        /* 1. 计算目标虚拟地址表达式并加载到 RAX */
+        if (mc_emit_expr(ctx, operands[0]) != 0) return -1;
+        /* 2. 依次发射操作码 0F 01 和 ModRM 38 */
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x01) != 0) return -1;
+        return mc_emit_u8(&ctx->code, 0x38);
+    }
+    
+    /* =================================================================
+    * WRPKRU: 0F 01 EF
+    * 工业级域保护键写入：直接发射 wrpkru 机器码（值已提前在 EAX/ECX/EDX 中装载）
+    * ================================================================= */
+    if (strcmp(op, "wrpkru") == 0) {
+        if (mc_emit_u8(&ctx->code, 0x0F) != 0) return -1;
+        if (mc_emit_u8(&ctx->code, 0x01) != 0) return -1;
+        return mc_emit_u8(&ctx->code, 0xEF);
+    }
+
     if (strcmp(op, "intcall") == 0) {
         if (operand_count != 1 || !operands || !operands[0]) return -1;
         if (mc_eval_const_expr(ctx, operands[0], &imm) != 0) return -1;
@@ -8562,12 +8731,12 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
         case AST_HW_PORT_IO: {
             /** 端口I/O操作 - 工业级 IN/OUT 指令生成
              * 支持 8/16/32/64 位端口操作
-             * 端口号通过 imm8 或 DX 寄存器指定
+             * 根据端口号范围智能选择 imm8 立即数寻址或 DX 寄存器间接寻址
              */
             ASTNode *port_type = stmt->data.hw_port_io.port_type;
             uint16_t port_num = stmt->data.hw_port_io.port_number;
             int is_read = stmt->data.hw_port_io.is_read;
-            
+
             /* 根据 port_type 确定操作数大小 */
             int port_size = 8;  /* 默认 UInt8 */
             if (port_type && port_type->type == AST_TYPE) {
@@ -8579,40 +8748,69 @@ static int mc_emit_stmt(McCtx *ctx, ASTNode *stmt) {
                 } else if (strcmp(type_name, "UInt64") == 0) {
                     port_size = 64;
                 }
-                /* 默认 UInt8 = 8 */
             }
-            
+
+            /* 修复 1：若是写操作，必须先调用 mc_emit_expr 评估右值，并加载到累加器（RAX/AL）中 */
+            if (!is_read) {
+                if (stmt->data.hw_port_io.operand) {
+                    if (mc_emit_expr(ctx, stmt->data.hw_port_io.operand) != 0) return -1;
+                } else {
+                    return -1; /* 写端口缺少要写入的操作数 */
+                }
+            }
+
+            /* 寻址智能选择：若端口号大于 0xFF，必须先使用 DX 寄存器中转（MOV DX, imm16） */
+            if (port_num > 0xFF) {
+                if (mc_emit_u8(&ctx->code, 0xBA) != 0) return -1; /* MOV DX, imm16 */
+                if (mc_emit_u16(&ctx->code, port_num) != 0) return -1;
+            }
+
             if (is_read) {
                 /* IN 指令 - 从端口读取到累加器 */
-                switch (port_size) {
-                    case 8: {
-                        /* IN AL, imm8: EC imm8 */
-                        if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1;
-                        if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
-                        break;
+                if (port_num <= 0xFF) {
+                    /* 立即数寻址：IN AL/AX/EAX, imm8 */
+                    switch (port_size) {
+                        case 8:
+                            if (mc_emit_u8(&ctx->code, 0xE4) != 0) return -1; /* IN AL, imm8 */
+                            if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
+                            break;
+                        case 16:
+                            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* Operand-size override */
+                            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1; /* IN AX, imm8 */
+                            if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
+                            break;
+                        case 32:
+                            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1; /* IN EAX, imm8 */
+                            if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
+                            break;
+                        case 64:
+                            if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+                            if (mc_emit_u8(&ctx->code, 0xE5) != 0) return -1; /* IN RAX, imm8 */
+                            if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
+                            break;
+                        default:
+                            return -1;
                     }
-                    case 16: {
-                        /* IN AX, imm8: 66 ED imm8 */
-                        if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1;  /* operand-size override */
-                        if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1;
-                        if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
-                        break;
+                } else {
+                    /* DX 寄存器寻址：IN AL/AX/EAX, DX */
+                    switch (port_size) {
+                        case 8:
+                            if (mc_emit_u8(&ctx->code, 0xEC) != 0) return -1; /* IN AL, DX */
+                            break;
+                        case 16:
+                            if (mc_emit_u8(&ctx->code, 0x66) != 0) return -1; /* Operand-size override */
+                            if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1; /* IN AX, DX */
+                            break;
+                        case 32:
+                            if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1; /* IN EAX, DX */
+                            break;
+                        case 64:
+                            if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1; /* REX.W */
+                            if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1; /* IN RAX, DX */
+                            break;
+                        default:
+                            return -1;
                     }
-                    case 32: {
-                        /* IN EAX, imm8: ED imm8 */
-                        if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1;
-                        if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
-                        break;
-                    }
-                    case 64: {
-                        /* IN RAX, imm8: 48 ED imm8 */
-                        if (mc_emit_u8(&ctx->code, 0x48) != 0) return -1;  /* REX.W */
-                        if (mc_emit_u8(&ctx->code, 0xED) != 0) return -1;
-                        if (mc_emit_u8(&ctx->code, (uint8_t)port_num) != 0) return -1;
-                        break;
-                    }
-                    default:
-                        return -1;  /* 不支持的端口宽度 */
                 }
             } else {
                 /* OUT 指令 - 从累加器写入到端口 */

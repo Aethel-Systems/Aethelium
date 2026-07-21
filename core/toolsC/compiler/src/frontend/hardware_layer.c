@@ -769,7 +769,92 @@ int hw_generate_isa_opcode(const char *operation, uint8_t *opcode_bytes) {
         opcode_bytes[1] = 0x33;
         return 2;
     }
-    
+
+    /* =================================================================
+     * AethelOS 工业级扩展：原子操作与位操作 ISA 指令
+     * 为 SRBM 三级基数位图矩阵、TL-PFR 无锁储蓄池、SERA 熵随机化
+     * 提供底层硬件级机器码生成能力。扩展点经 mc_emit_stmt 的
+     * AST_HW_ISA_CALL 通用 fallback 路径直接输出原始字节。
+     * ================================================================= */
+
+    /* RDRAND rbx: 0F C7 F3
+     * 读取硬件随机数发生器，结果存入 RBX，CF 标志位指示成功。
+     * 用于 SERA 空间熵随机化分配机制。 */
+    if (strcmp(operation, "rdrand") == 0) {
+        opcode_bytes[0] = 0x0F;
+        opcode_bytes[1] = 0xC7;
+        opcode_bytes[2] = 0xF3;
+        return 3;
+    }
+
+    /* RDSEED rbx: 0F C7 FB
+     * 读取硬件种子发生器（比 RDRAND 熵更高），结果存入 RBX。
+     * 用于高安全 A-Instance 的 AethelID 生成。 */
+    if (strcmp(operation, "rdseed") == 0) {
+        opcode_bytes[0] = 0x0F;
+        opcode_bytes[1] = 0xC7;
+        opcode_bytes[2] = 0xFB;
+        return 3;
+    }
+
+    /* POPCNT rax, rax: F3 48 0F B8 C0
+     * 统计 RAX 中置位数量，结果存入 RAX。
+     * 用于 SRBM 位图的空闲页计数与超块利用率统计。 */
+    if (strcmp(operation, "popcount") == 0) {
+        opcode_bytes[0] = 0xF3;
+        opcode_bytes[1] = 0x48;
+        opcode_bytes[2] = 0x0F;
+        opcode_bytes[3] = 0xB8;
+        opcode_bytes[4] = 0xC0;
+        return 5;
+    }
+
+    /* BSF rax, rax: 48 0F BC C0
+     * 位扫描前向：找到 RAX 中首个置位位的位置，存入 RAX。
+     * 若 RAX 为 0 则 ZF=1。用于 SRBM L1/L2/L3 位图快速定位空闲帧。 */
+    if (strcmp(operation, "bitforward") == 0) {
+        opcode_bytes[0] = 0x48;
+        opcode_bytes[1] = 0x0F;
+        opcode_bytes[2] = 0xBC;
+        opcode_bytes[3] = 0xC0;
+        return 4;
+    }
+
+    /* BSR rax, rax: 48 0F BD C0
+     * 位扫描反向：找到 RAX 中末个置位位的位置，存入 RAX。
+     * 用于 SRBM 反向扫描以实现高熵离散分配。 */
+    if (strcmp(operation, "bitreverse") == 0) {
+        opcode_bytes[0] = 0x48;
+        opcode_bytes[1] = 0x0F;
+        opcode_bytes[2] = 0xBD;
+        opcode_bytes[3] = 0xC0;
+        return 4;
+    }
+
+    /* LZCNT rax, rax: F3 48 0F BD C0
+     * 前导零计数：统计 RAX 中前导零数量，存入 RAX。
+     * 用于 SRBM 位图的快速空闲区域定位。 */
+    if (strcmp(operation, "leadzero") == 0) {
+        opcode_bytes[0] = 0xF3;
+        opcode_bytes[1] = 0x48;
+        opcode_bytes[2] = 0x0F;
+        opcode_bytes[3] = 0xBD;
+        opcode_bytes[4] = 0xC0;
+        return 5;
+    }
+
+    /* TZCNT rax, rax: F3 48 0F BC C0
+     * 尾随零计数：统计 RAX 中尾随零数量，存入 RAX。
+     * 用于 SRBM 位图的精确空闲位偏移计算。 */
+    if (strcmp(operation, "trailzero") == 0) {
+        opcode_bytes[0] = 0xF3;
+        opcode_bytes[1] = 0x48;
+        opcode_bytes[2] = 0x0F;
+        opcode_bytes[3] = 0xBC;
+        opcode_bytes[4] = 0xC0;
+        return 5;
+    }
+
     /* 未识别的操作 */
     return -1;
 }
